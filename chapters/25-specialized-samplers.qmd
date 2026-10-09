@@ -1,0 +1,345 @@
+# Specialised Sampling Methods {#sec-specialized}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. derive slice sampling as Gibbs sampling on an augmented space, and implement the stepping-out and shrinkage procedures;
+2. apply elliptical slice sampling and the preconditioned Crank–Nicolson sampler to models with Gaussian priors, and explain their dimension robustness;
+3. prove that parallel tempering leaves the target invariant, design temperature ladders, and use tempering for multimodal targets;
+4. place sequential Monte Carlo samplers within the toolkit, including their use for multimodality and marginal likelihoods;
+5. handle constrained parameters by transformation with Jacobians, and use latent-variable augmentation (Albert–Chib) to obtain conjugate full conditionals;
+6. compare the assumptions, strengths and limitations of the samplers in this book.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-mh, @sec-gibbs, @sec-importance (SMC), @sec-hmc, and @sec-prob-transformations (Jacobians).
+:::
+
+## Motivation {#sec-spec-motivation}
+
+No single sampler is best for every posterior. Random-walk Metropolis needs tuning and scales poorly with dimension; Gibbs sampling needs tractable full conditionals; HMC needs gradients and smooth, unimodal geometry. Specialised methods fill the gaps. Slice samplers need no tuning of a proposal scale; samplers built around Gaussian priors remain efficient in very high dimensions; tempering and SMC handle multimodality; and augmentation turns intractable models into conditionally conjugate ones. This chapter develops the most useful of these and ends with a comparison of the methods in the book.
+
+## Definitions and notation {#sec-spec-definitions}
+
+::: {#def-auxiliary}
+## Auxiliary-variable method
+An **auxiliary-variable** (or **augmentation**) method introduces a variable $u$ and a joint density $p(x,u)$ whose $x$-marginal is the target $\pi(x)$, and samples the joint, typically by Gibbs updates. Discarding $u$ gives draws from $\pi$.
+:::
+
+HMC (momentum), slice sampling (height), data augmentation (latent data) and tempering (inverse temperature) are all instances.
+
+## Mathematical development {#sec-spec-development}
+
+### Slice sampling {#sec-spec-slice}
+
+Let $\tilde\pi$ be an unnormalised density and consider the uniform distribution on the region under its graph,
+$$
+p(x,u)\propto\mathbf 1\{0<u<\tilde\pi(x)\}.
+$$ {#eq-slice-joint}
+Integrating out $u$ gives $\int\mathbf 1\{0<u<\tilde\pi(x)\}\,du=\tilde\pi(x)$, so the $x$-marginal is $\pi$. The full conditionals are uniform: $u\mid x\sim\mathrm U(0,\tilde\pi(x))$, and $x\mid u$ is uniform on the **slice** $S_u=\{x:\tilde\pi(x)>u\}$. Gibbs sampling of @eq-slice-joint is the **slice sampler** [@neal2003slice; @damien1999gibbs; @higdon1998auxiliary].
+
+Drawing uniformly from the slice is easy only for simple targets. @neal2003slice gives procedures for univariate targets that update $x$ by a move that leaves the uniform distribution on $S_u$ invariant, without requiring the slice to be found exactly:
+
+- **stepping out**: place an interval of width $w$ randomly around the current $x$, and extend it in steps of $w$ until both ends lie outside the slice (or a maximum number of steps is reached);
+- **shrinkage**: draw a point uniformly from the interval; if it is outside the slice, shrink the interval towards the current point (replacing the endpoint on that side) and draw again.
+
+These rules are reversible with respect to the uniform distribution on the slice [@neal2003slice, Section 4], so the whole update leaves $\pi$ invariant. Slice sampling adapts automatically to the local scale, since the interval expands or shrinks as needed. The width $w$ affects efficiency but not correctness, and moves are never rejected outright. Work is computed on the log scale: $\log u=\log\tilde\pi(x)-E$ with $E\sim\mathrm{Exp}(1)$. Multivariate targets are handled by updating one coordinate at a time, or along random directions.
+
+### Samplers for Gaussian priors {#sec-spec-gaussian-prior}
+
+Many models have the form
+$$
+\pi(f)\propto L(f)\,\mathrm N(f\mid0,\Sigma),
+$$
+with a Gaussian prior on a high-dimensional $f$: Gaussian processes, spatial random effects and regression coefficients. Two samplers exploit this structure.
+
+**Preconditioned Crank–Nicolson (pCN)** [@cotter2013mcmc] proposes $f'=\sqrt{1-\beta^2}f+\beta\xi$ with $\xi\sim\mathrm N(0,\Sigma)$.
+
+::: {#prp-pcn}
+## pCN needs only the likelihood ratio
+The pCN proposal is reversible with respect to the prior $\mathrm N(0,\Sigma)$. Consequently, the Metropolis–Hastings acceptance probability for the posterior is $\min\{1,L(f')/L(f)\}$.
+:::
+
+::: {.proof}
+If $f\sim\mathrm N(0,\Sigma)$, then $(f,f')$ is jointly Gaussian with $\operatorname{Var}(f)=\operatorname{Var}(f')=\Sigma$ (since $(1-\beta^2)\Sigma+\beta^2\Sigma=\Sigma$) and $\operatorname{Cov}(f,f')=\sqrt{1-\beta^2}\Sigma$, which is symmetric in the two arguments. So $\mathrm N(f\mid0,\Sigma)q(f'\mid f)=\mathrm N(f'\mid0,\Sigma)q(f\mid f')$. In the Hastings ratio $\frac{L(f')\mathrm N(f'\mid0,\Sigma)q(f\mid f')}{L(f)\mathrm N(f\mid0,\Sigma)q(f'\mid f)}$, the prior and proposal terms cancel, leaving $L(f')/L(f)$.
+:::
+
+Because the prior part of the target never enters the acceptance ratio, the acceptance rate depends on how much the *likelihood* changes, not on the dimension of $f$. Random-walk Metropolis, by contrast, must shrink its steps like $d^{-1/2}$ to stay in the region of high *prior* density. This is the dimension robustness that makes pCN suitable for function spaces.
+
+**Elliptical slice sampling** [@murray2010elliptical] combines the same idea with slice sampling: draw $\nu\sim\mathrm N(0,\Sigma)$, define the ellipse $f'(\phi)=f\cos\phi+\nu\sin\phi$ (which leaves the prior invariant for every angle), and slice-sample the angle with a bracket that shrinks towards the current point. It has no tuning parameters, and every update produces a move.
+
+### Tempering for multimodal targets {#sec-spec-tempering}
+
+Local samplers cannot cross deep valleys between modes (@sec-why-worked). **Tempering** flattens the target: the **tempered** density $\pi_\beta\propto\tilde\pi^\beta$ with $0<\beta<1$ has the same modes but much shallower valleys. A chain at small $\beta$ ("high temperature") moves freely between modes.
+
+**Parallel tempering** (replica exchange) [@swendsen1986replica; @geyer1991markov; @hukushima1996exchange] runs $K$ chains at inverse temperatures $1=\beta_1>\beta_2>\dots>\beta_K>0$, each with its own $\pi_{\beta_k}$-invariant kernel, and periodically proposes to swap the states of adjacent chains.
+
+::: {#prp-pt-invariance}
+## Parallel tempering leaves the product target invariant
+The swap of the states of chains $k$ and $k+1$, accepted with probability
+$$
+\min\Big\{1,\ \Big(\frac{\tilde\pi(x_{k+1})}{\tilde\pi(x_k)}\Big)^{\beta_k-\beta_{k+1}}\Big\},
+$$
+leaves the product distribution $\prod_k\pi_{\beta_k}(x_k)$ invariant. Hence the chain at $\beta_1=1$ has marginal invariant distribution $\pi$.
+:::
+
+::: {.proof}
+The swap is a deterministic, symmetric proposal on the product space (applying it twice returns to the start), so the Metropolis–Hastings ratio is the ratio of product densities after and before the swap:
+$\frac{\tilde\pi(x_{k+1})^{\beta_k}\tilde\pi(x_k)^{\beta_{k+1}}}{\tilde\pi(x_k)^{\beta_k}\tilde\pi(x_{k+1})^{\beta_{k+1}}}=\big(\tilde\pi(x_{k+1})/\tilde\pi(x_k)\big)^{\beta_k-\beta_{k+1}}$. The normalising constants of the $\pi_{\beta_k}$ cancel because each appears once before and once after. The within-chain moves are $\pi_{\beta_k}$-invariant, so the composition leaves the product invariant (@prp-mixture-composition).
+:::
+
+**Designing the ladder.** Adjacent temperatures must be close enough that swaps are accepted reasonably often: their distributions must overlap. Geometric spacing of the $\beta_k$ is a common starting point, with spacing tuned so that swap acceptance rates are around 0.2–0.4. The hottest chain must be hot enough to cross the barriers. The number of temperatures needed grows with dimension, roughly like $\sqrt d$ for smooth targets, since the variance of $\log\tilde\pi$ grows linearly in $d$. Theory gives conditions for rapid mixing of tempering methods, and also shows that they can fail when modes have very different shapes, for example when one mode is wide and another narrow [@woodard2009conditions]. **Simulated tempering** [@marinari1992simulated] instead moves a single chain up and down the temperature ladder.
+
+### Sequential Monte Carlo samplers {#sec-spec-smc}
+
+SMC samplers (@sec-is-vs-mcmc) move a population of particles through tempered distributions from the prior ($\beta=0$) to the posterior ($\beta=1$), reweighting, resampling and applying MCMC moves at each stage [@delmoral2006sequential; @chopin2002sequential; @chopin2020introduction]. Compared with parallel tempering, SMC is naturally parallel across particles, estimates the marginal likelihood as a by-product, and adapts its temperature schedule automatically. Its weakness is that particles must cover every mode *before* the distributions separate them, and with few particles a small mode can be lost by resampling. Annealed importance sampling [@neal2001annealed] is the special case without resampling.
+
+### Constrained parameters {#sec-spec-constraints}
+
+Most samplers work best on $\mathbb R^d$. Constrained parameters are mapped to unconstrained ones by smooth bijections, and the log-Jacobian of the inverse map is added to the log density (@thm-change-of-variables) [@stan2026reference]:
+
+| Constraint | Transformation $\theta=g(\eta)$ | Log-Jacobian $\log\lvert dg/d\eta\rvert$ |
+|:--|:--|:--|
+| $\theta>0$ | $\theta=e^\eta$ | $\eta$ |
+| $a<\theta<b$ | $\theta=a+(b-a)\operatorname{logit}^{-1}(\eta)$ | $\log(b-a)+\log\operatorname{logit}^{-1}(\eta)+\log(1-\operatorname{logit}^{-1}(\eta))$ |
+| simplex $\theta\in\Delta^{K-1}$ | stick-breaking from $K-1$ logits | sum of stick-breaking terms |
+| correlation / covariance matrix | Cholesky factor with unconstrained entries | sum over diagonal factors |
+| ordered vector | $\theta_1=\eta_1$, $\theta_k=\theta_{k-1}+e^{\eta_k}$ | $\sum_{k\ge2}\eta_k$ |
+: Common transformations to unconstrained space. {#tbl-constraints}
+
+Alternatives are rejecting proposals outside the constraint, which is valid (@sec-mh-invariance) but wasteful near boundaries, and reflecting proposals at the boundary, which is valid if the reflected proposal remains symmetric.
+
+### Latent-variable augmentation {#sec-spec-augmentation}
+
+Some models become conditionally conjugate when latent variables are added. In **probit regression**, $y_i=\mathbf 1\{z_i>0\}$ with $z_i\sim\mathrm N(x_i^\top\beta,1)$ reproduces $\mathbb P(y_i=1\mid\beta)=\Phi(x_i^\top\beta)$. Given $z$, $\beta$ has a normal full conditional (linear regression with known variance), and given $\beta$ and $y$, each $z_i$ is a truncated normal. This is the **Albert–Chib sampler** [@albert1993bayesian], implemented in `albert_chib_probit()` with a log-scale inverse-CDF method for the truncated normal draws that remains accurate far in the tails [@robert1995simulation]. For logistic regression, the Pólya–Gamma augmentation plays the same role [@polson2013bayesian]. Mixture models are augmented with component labels, which gives conjugate updates but exposes the label-switching symmetry of the posterior [@jasra2005markov].
+
+Augmentation trades analytical convenience for dependence. The latent variables are highly correlated with the parameters when the data are informative, which can make the Gibbs sampler slow, and the more so the more imbalanced the binary outcomes [@vandyk2001art; @liu1994covariance].
+
+## Worked example 1: four samplers on a bimodal target {#sec-spec-worked-modes}
+
+The target is $\pi=0.7\,\mathrm N(-4,1)+0.3\,\mathrm N(4,1)$, as in @sec-why-worked. We estimate the weight of the right mode (true value 0.3) with random-walk Metropolis, univariate slice sampling, parallel tempering and SMC, starting each local sampler in the left mode. Each method is run 20 times with a comparable budget of about $10^5$ target evaluations, and we report the mean and spread of the estimates across runs.
+
+```{r}
+#| label: spec-bimodal
+tg <- target_mixture(c(0.7, 0.3), c(-4, 4), c(1, 1))
+set.seed(2501)
+est <- replicate(20, c(
+  RWM = mean(metropolis_hastings(tg$log_density, -4, 1e5, 1)$draws > 0),
+  slice = mean(slice_sampler(tg$log_density, -4, 2.5e4, w = 1) > 0),            # ~4 evaluations per update
+  parallel_tempering = mean(parallel_tempering(tg$log_density, -4, 2.5e4, betas = c(1, 0.4, 0.15, 0.05),
+                                               proposal_sd = c(1.5, 2.5, 4, 7))$draws > 0),
+  SMC = mean(smc_tempering(function(x) tg$log_density(x) - dnorm(x, 0, 10, log = TRUE),
+                           function(x) dnorm(x, 0, 10, log = TRUE), function(k) rnorm(k, 0, 10), n = 2000)$draws > 0)))
+rbind(mean_estimate = rowMeans(est), sd_across_runs = apply(est, 1, sd), true = 0.3) |> round(3)
+```
+
+Over $10^5$ evaluations, random-walk Metropolis and the slice sampler do cross between the modes occasionally, so their estimates are right *on average*. But each run's estimate rests on a handful of crossings, and the run-to-run standard deviations (about 0.13 and 0.08) are enormous for a probability of 0.3. A single run of either sampler could easily report 0.1 or 0.5. Parallel tempering and SMC achieve run-to-run standard deviations of about 0.01 at a similar cost, an order of magnitude more precise, because their hot chains or early particles move between the modes freely.
+
+## Worked example 2: dimension robustness with a Gaussian prior {#sec-spec-worked-pcn}
+
+Consider logistic regression with $d$ coefficients, $n=100$ observations and prior $\beta\sim\mathrm N(0,I_d)$. The likelihood is fairly weak relative to the prior in high dimensions. We compare random-walk Metropolis (scale $2.38/\sqrt d$), pCN ($\beta_{\mathrm{pCN}}=0.3$) and elliptical slice sampling, recording the acceptance rate and the ESS of the first coefficient per 1000 likelihood evaluations.
+
+```{r}
+#| label: spec-pcn
+set.seed(2502)
+run_dim <- function(d) {
+  Xd <- matrix(rnorm(100 * d), 100, d) / sqrt(d); yd <- rbinom(100, 1, inv_logit(Xd %*% rnorm(d)))
+  m <- logistic_regression_model(Xd, yd, prior_sd = 1)
+  ll <- function(b) sum(m$log_lik_pointwise(b))
+  n_it <- 6000
+  rw <- rw_metropolis(m$log_density, rep(0, d), n_it, proposal_cov = 2.38 / sqrt(d))
+  pc <- pcn_sampler(ll, rep(0, d), n_it, diag(d), beta = 0.3)
+  es <- elliptical_slice(ll, rep(0, d), n_it / 3, diag(d))             # ~3 likelihood evaluations per update
+  keep <- function(dr) dr[-(1:(nrow(dr) %/% 5)), 1]
+  c(d = d, acc_rwm = rw$acceptance_rate, acc_pcn = pc$acceptance_rate,
+    ess_rwm = 1000 * ess_bulk(keep(rw$draws)) / n_it, ess_pcn = 1000 * ess_bulk(keep(pc$draws)) / n_it,
+    ess_elliptical = 1000 * ess_bulk(keep(es)) / n_it)
+}
+round(t(sapply(c(10, 50, 200), run_dim)), 3)
+```
+
+As $d$ grows from 10 to 200, the random-walk sampler's efficiency per evaluation falls by a factor of about five, as optimal-scaling theory predicts. pCN keeps an acceptance rate near 0.5 at every dimension, because its acceptance ratio involves only the likelihood, and from $d=50$ on its efficiency is roughly four times that of the random walk and stable in $d$. Elliptical slice sampling is about two to three times as efficient as the random walk, with no tuning parameter at all.
+
+## Worked example 3: probit regression by data augmentation {#sec-spec-worked-probit}
+
+We fit a probit model for low birth weight (@sec-reg-worked-logistic) with the Albert–Chib sampler, and compare it with maximum likelihood.
+
+```{r}
+#| label: spec-probit
+bw <- MASS::birthwt; std <- function(v) (v - mean(v)) / sd(v)
+X <- with(bw, cbind(intercept = 1, age = std(age), lwt = std(lwt), smoke = smoke, ht = ht, ui = ui, ptd = as.numeric(ptl > 0)))
+set.seed(2503)
+ch <- lapply(1:4, function(k) albert_chib_probit(X, bw$low, 4000, prior_sd = 5, initial = rnorm(ncol(X), 0, 0.5))[-(1:500), ])
+smoke_draws <- sapply(ch, function(d) d[, "smoke"])
+post <- do.call(rbind, ch)
+cbind(posterior_mean = colMeans(post), glm_probit = coef(glm(bw$low ~ X - 1, family = binomial(link = "probit")))) |> round(3)
+summarise_draws_basic(smoke_draws, "smoke")
+```
+
+The augmentation sampler reproduces the maximum likelihood fit closely (the prior is weak), with every update an exact conditional draw and no tuning. Here the outcome is not rare (31% of births) and the ESS per iteration for the smoking coefficient is respectable, about 0.4. With rare outcomes, the latent $z_i$ and the intercept become strongly dependent and the ESS per iteration drops sharply (@exr-spec-5). That is the price of augmentation.
+
+## R implementation {#sec-spec-r}
+
+```{r}
+#| file: R/samplers/slice.R
+```
+
+```{r}
+#| file: R/samplers/augmentation.R
+```
+
+Parallel tempering and SMC are in `R/samplers/tempering-smc.R` (@sec-is-r). All samplers are validated in `tests/testthat/`: the slice sampler on a Gamma target with a boundary, elliptical slice and pCN on conjugate Gaussian posteriors, parallel tempering on a well-separated mixture, SMC against an exact posterior and marginal likelihood, the truncated-normal generator in the extreme tails, and the Albert–Chib sampler against a grid posterior.
+
+## Computational experiment: tuning a temperature ladder {#sec-spec-experiment}
+
+For the bimodal target with modes at $\pm6$, we compare ladders with different numbers of temperatures (always ending at $\beta_K=0.03$, geometrically spaced) by their swap acceptance rates and the accuracy of the estimated weight of the right mode.
+
+```{r}
+#| label: spec-ladder
+tg6 <- target_mixture(c(0.7, 0.3), c(-6, 6), c(1, 1))
+set.seed(2504)
+ladder <- function(K) exp(seq(0, log(0.03), length.out = K))
+res <- t(sapply(c(2, 3, 5, 8), function(K) {
+  b <- ladder(K)
+  runs <- replicate(10, { pt <- parallel_tempering(tg6$log_density, -6, 20000, betas = b, proposal_sd = 2 / sqrt(b))
+    c(w = mean(pt$draws > 0), min_swap = min(pt$swap_acceptance)) })
+  c(K = K, mean_min_swap_rate = mean(runs["min_swap", ]), mean_weight = mean(runs["w", ]), sd_weight = sd(runs["w", ]))
+}))
+round(res, 3)
+```
+
+For this one-dimensional target, even two temperatures work: the hot chain at $\beta=0.03$ crosses the barrier easily, and its distribution overlaps the target enough for about a quarter of swaps to be accepted. Three temperatures give the most precise estimate. With more rungs, swap rates rise, but information has to pass through more swaps to reach the cold chain, and each iteration costs more, so at a fixed number of iterations the estimate becomes *less* precise. In higher dimensions the distributions $\pi_\beta$ overlap much less, so adjacent temperatures must be closer and more rungs are needed. Tuning the ladder means balancing swap rates (0.2–0.4 is a common target) against the number of rungs.
+
+## Diagnostics and validation {#sec-spec-validation}
+
+- **Slice samplers**: monitor the number of target evaluations per update (stepping out and shrinkage steps). A very large number signals a poor width $w$.
+- **Tempering**: report swap acceptance rates for every adjacent pair, and check that states actually travel from the hottest to the coldest chain (round trips).
+- **SMC**: monitor the ESS at each stage, the number of temperatures, and the acceptance rates of the move steps. Check particle diversity after resampling.
+- **Augmentation**: monitor the autocorrelation of the parameters, which can be high even when every update is exact.
+- **All**: validate on targets with known answers (the tests) and by SBC (@sec-validation).
+
+## Interpretation {#sec-spec-interpretation}
+
+The specialised samplers extend the reach of MCMC in specific directions. Slice samplers remove tuning, Gaussian-prior samplers handle very high dimensions, tempering and SMC handle multiple modes, and augmentation handles models whose conditionals are otherwise intractable. Each has assumptions and failure modes of its own, and none is universally better than HMC for smooth, unimodal posteriors.
+
+## Limitations and common errors {#sec-spec-errors}
+
+- **Assuming slice sampling is immune to multimodality.** It is a local method.
+- **Temperature ladders with gaps**: swaps fail and the cold chain does not benefit.
+- **Using only the cold chain's diagnostics** in parallel tempering. Check that hot chains mix and that swaps happen.
+- **Too few SMC particles** for multimodal targets: modes can be lost at resampling.
+- **Forgetting Jacobians** when transforming constrained parameters.
+- **Expecting augmentation samplers to mix well** with informative or imbalanced data.
+
+## Comparison of samplers {#sec-spec-comparison}
+
+| Method | Requires | Strengths | Weaknesses | Chapter |
+|:--|:--|:--|:--|:--|
+| Random-walk Metropolis | $\log\tilde\pi$ | simple, robust | $O(d)$ cost per effective draw; poor with correlation, heavy tails | 12 |
+| Independence MH | $\log\tilde\pi$, proposal $g$ | uniformly ergodic with bounded weights | needs a good global proposal | 12 |
+| Gibbs | full conditionals | no tuning, exact block updates | slow with dependence between blocks | 13 |
+| Importance sampling | $\log\tilde\pi$, proposal $g$ | independent draws, $\hat Z$ | weight degeneracy in high dimensions | 14 |
+| HMC / NUTS | $\log\tilde\pi$, $\nabla\log\tilde\pi$ | efficient in high dimensions; divergence diagnostics | gradients; funnels; multimodality | 15–16 |
+| MALA | $\log\tilde\pi$, $\nabla\log\tilde\pi$ | better scaling than RWM | unstable with fast-growing gradients | 16 |
+| Adaptive Metropolis | $\log\tilde\pi$ | learns covariance | validity conditions; one mode | 16 |
+| Slice sampling | $\log\tilde\pi$ | no proposal scale to tune; adapts locally | local; costly in many dimensions | 25 |
+| Elliptical slice / pCN | Gaussian prior, $\log L$ | dimension-robust; no tuning (ESS) | specific model structure | 25 |
+| Parallel tempering | $\log\tilde\pi$ | multimodality | ladder design; cost $\times K$ | 25 |
+| SMC samplers | $\log L$, prior sampler | multimodality, $\hat Z$, parallel | particle number, move design | 14, 25 |
+| Data augmentation | latent structure | conjugate updates | slow with informative data | 13, 25 |
+: Summary of the samplers developed in this book. {#tbl-sampler-comparison}
+
+## Chapter summary {#sec-spec-summary}
+
+- Slice sampling is Gibbs sampling on the region under the density (@eq-slice-joint), made practical by stepping out and shrinkage.
+- For Gaussian priors, pCN (@prp-pcn) and elliptical slice sampling have acceptance behaviour governed by the likelihood alone, and are robust to dimension.
+- Parallel tempering swaps states between tempered chains with an acceptance rule that keeps the product target invariant (@prp-pt-invariance). The ladder must have overlapping adjacent levels.
+- SMC samplers move particle populations through tempered distributions and estimate marginal likelihoods.
+- Constrained parameters are sampled on unconstrained scales with log-Jacobian adjustments (@tbl-constraints). Augmentation (Albert–Chib) gives conjugate updates at the cost of dependence.
+- Each method has a niche (@tbl-sampler-comparison). HMC remains the default for smooth, unimodal posteriors.
+
+## Exercises {#sec-spec-exercises}
+
+::: {#exr-spec-1}
+**[Proof ★]** Show that the $x$-marginal of @eq-slice-joint is $\pi$, and that the full conditional of $u$ given $x$ is $\mathrm U(0,\tilde\pi(x))$.
+:::
+
+::: {#exr-spec-2}
+**[Mathematical ★★]** For the target $\mathrm{Exp}(1)$ and slice level $u$, find the slice $S_u$ exactly and write an exact slice sampler. Compute its lag-1 autocorrelation numerically.
+:::
+
+::: {#exr-spec-3}
+**[Proof ★★]** Show that the ellipse $f'(\phi)=f\cos\phi+\nu\sin\phi$ with $f,\nu$ independent $\mathrm N(0,\Sigma)$ has $f'(\phi)\sim\mathrm N(0,\Sigma)$ for every fixed $\phi$, and that $(f,\nu)\mapsto(f'(\phi),f'(\phi+\pi/2))$ preserves the joint distribution.
+:::
+
+::: {#exr-spec-4}
+**[R ★★]** Implement simulated tempering for the bimodal target: a single chain on $(x,k)$ with temperatures $\beta_k$ and pseudo-prior weights $c_k$, moves in $x$ at fixed $k$, and moves in $k$ to neighbouring levels. Explain how the weights $c_k$ should be chosen, and estimate them by a pilot run.
+:::
+
+::: {#exr-spec-5}
+**[Simulation ★★]** Run the Albert–Chib sampler on simulated probit data with $n=500$ and success probability around 0.5, and again around 0.02 (rare events). Compare the ESS per iteration of the intercept, and explain the difference.
+:::
+
+::: {#exr-spec-6}
+**[Critique ★★]** "Our model is multimodal, so we used HMC, which is known to be the most efficient sampler." Discuss.
+:::
+
+::: {#exr-spec-7}
+**[Research ★★★]** Implement a two-component normal mixture model with a Gibbs sampler using allocation variables. Demonstrate label switching (or its absence) in the output, and implement a relabelling strategy [@jasra2005markov] for reporting component-specific summaries.
+:::
+
+## Further reading {#sec-spec-reading}
+
+- @neal2003slice: slice sampling, including stepping out, shrinkage and multivariate variants.
+- @murray2010elliptical and @cotter2013mcmc: elliptical slice sampling and pCN for Gaussian priors.
+- @geyer1991markov, @swendsen1986replica, @hukushima1996exchange, @marinari1992simulated and @woodard2009conditions: tempering methods and their theory.
+- @delmoral2006sequential, @chopin2002sequential, @neal2001annealed and @chopin2020introduction: SMC samplers and annealed importance sampling.
+- @albert1993bayesian, @polson2013bayesian, @tanner1987calculation and @vandyk2001art: data augmentation.
+- @jasra2005markov: label switching in mixture models.
+- @liu2004monte: a broad survey of Monte Carlo strategies.
+
+## Solutions {#sec-spec-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-spec-1
+$\int p(x,u)\,du\propto\int_0^{\tilde\pi(x)}du=\tilde\pi(x)$. For fixed $x$, $p(u\mid x)\propto\mathbf 1\{0<u<\tilde\pi(x)\}$, which is uniform on $(0,\tilde\pi(x))$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-spec-2
+$S_u=\{x>0:e^{-x}>u\}=(0,-\log u)$. Exact slice sampler: $u=e^{-x}V_1$, then $x'=-\log(u)\,V_2$ with $V_1,V_2\sim\mathrm U(0,1)$, so $x'=(x-\log V_1)V_2$. Simulation gives a lag-1 autocorrelation of about 0.5: even exact slice sampling produces dependent draws.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-spec-3
+$f'(\phi)$ is a linear combination of independent Gaussians with covariance $\cos^2\phi\,\Sigma+\sin^2\phi\,\Sigma=\Sigma$. The map $(f,\nu)\mapsto(f\cos\phi+\nu\sin\phi,\,-f\sin\phi+\nu\cos\phi)$ is a rotation in each coordinate pair, so it preserves the joint distribution $\mathrm N(0,\Sigma)\otimes\mathrm N(0,\Sigma)$. This rotation invariance is why elliptical slice sampling can move along the ellipse without changing the prior.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-spec-4
+Target the joint $p(x,k)\propto c_k\tilde\pi(x)^{\beta_k}$. Moves in $k$ to $k\pm1$ are accepted with probability $\min\{1,\frac{c_{k'}\tilde\pi(x)^{\beta_{k'}}}{c_k\tilde\pi(x)^{\beta_k}}\}$. To make the chain spend similar time at each level, choose $c_k\propto1/Z_{\beta_k}$, where $Z_\beta=\int\tilde\pi^\beta$. These normalising constants are unknown, but can be estimated from a pilot run, for example by stochastic approximation that adjusts $\log c_k$ until the occupation frequencies are equal. Draws with $k=1$ are draws from $\pi$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-spec-5
+With balanced outcomes, the intercept mixes reasonably. With rare events, the latent $z_i$ for the many $y_i=0$ observations are tightly constrained to be negative, and the intercept's full conditional given $z$ is very narrow relative to its marginal posterior, so each Gibbs sweep moves it only slightly. The ESS per iteration collapses. HMC on the probit log posterior does not suffer from this.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-spec-6
+HMC is efficient for smooth unimodal posteriors, but it cannot cross deep valleys between modes, because trajectories conserve energy approximately (@sec-hmc-why). For a genuinely multimodal posterior, tempering, SMC or problem-specific moves (such as relabelling symmetric modes) are needed. Alternatively, if the modes are symmetric copies (as with label switching), they can be removed by constraints, after which HMC may work well. The claim confuses efficiency with ability to explore.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-spec-7
+With priors symmetric in the component labels, the posterior is invariant under swapping labels, and a well-mixing sampler visits both labellings, so component-specific posterior means are averaged across labels and meaningless. Gibbs samplers often fail to switch, which hides the problem. Relabelling: for each draw, choose the permutation that minimises a loss relative to a reference (e.g. order by component means, or use an iterative algorithm), then summarise the relabelled draws. Report label-invariant quantities, such as the predictive density, whenever possible.
+:::

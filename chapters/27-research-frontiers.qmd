@@ -1,0 +1,449 @@
+# Research Frontiers and Independent Study {#sec-frontiers}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. explain how probabilistic programming languages and automatic differentiation turn a model specification into gradient-based inference, and implement forward-mode differentiation;
+2. derive the target distribution of approximate Bayesian computation and diagnose the effects of tolerance and summary statistics;
+3. derive the evidence lower bound, prove that mean-field Gaussian variational inference underestimates marginal variances of a correlated Gaussian, and check a variational approximation with Pareto-$\hat k$;
+4. analyse stochastic gradient Langevin dynamics for a Gaussian model and explain its bias–variance trade-off;
+5. describe how misspecification affects posterior calibration, and how generalised (tempered) posteriors respond;
+6. read, critique and reproduce a methodological research paper in computational Bayesian statistics.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+The whole book, especially @sec-importance (importance sampling and PSIS), @sec-hmc (gradients), @sec-mcmc-theory (theory), @sec-specialized (pCN and SMC) and @sec-engineering (simulation studies).
+:::
+
+## Motivation {#sec-front-motivation}
+
+The methods in this book are exact in the limit of long runs: MCMC, importance sampling and SMC all target the posterior itself. Much current research relaxes this, for three reasons. Likelihoods may be **unavailable**, because the model is defined only by a simulator. Data may be **too large** for every iteration to touch every observation. And the model may be **wrong**, so that exact conditioning on a misspecified likelihood is not what we want. Approximate Bayesian computation, variational inference, stochastic-gradient MCMC and generalised Bayesian inference each answer one of these pressures by targeting a *different* distribution from the posterior. The common thread of this chapter is to ask, for each method: **which distribution does it target, and how far is that from the posterior?** The chapter ends with guidance for continuing beyond this book.
+
+This chapter is a map, not a complete treatment. Each section introduces an area through one derivation and one experiment that can be checked exactly, and points to the literature.
+
+## Definitions and notation {#sec-front-definitions}
+
+::: {#def-front-ppl}
+## Probabilistic program
+A **probabilistic programming language** (PPL) lets a user write a joint density $p(\theta,y)$ (or a generative simulator) as a program, and provides inference algorithms that operate on any program written in it. Examples include BUGS [@lunn2000winbugs], Stan [@carpenter2017stan], NIMBLE [@devalpine2017programming] and PyMC [@salvatier2016probabilistic]. R interfaces such as `cmdstanr` and `brms` [@burkner2017brms] make them usable from R.
+:::
+
+::: {#def-front-abc}
+## Likelihood-free inference
+A model is **likelihood-free** (or simulator-based) if we can simulate $Y^*\sim p(\cdot\mid\theta)$ for any $\theta$ but cannot evaluate $p(y\mid\theta)$. Given summary statistics $S$, a distance $\rho$ and a tolerance $\varepsilon>0$, the **ABC posterior** is
+$$
+\pi_\varepsilon(\theta\mid y)\propto\pi(\theta)\,\mathbb P_\theta\{\rho(S(Y^*),S(y))\le\varepsilon\}.
+$$ {#eq-front-abc}
+:::
+
+::: {#def-front-vi}
+## Variational inference
+Given a family $\mathcal Q$ of tractable densities, **variational inference** (VI) chooses $q^\star=\arg\min_{q\in\mathcal Q}\mathrm{KL}(q\,\|\,\pi(\cdot\mid y))$. The **evidence lower bound** is $\mathrm{ELBO}(q)=\mathbb E_q[\log p(\theta,y)]-\mathbb E_q[\log q(\theta)]$. **Mean-field** families factorise, $q(\theta)=\prod_i q_i(\theta_i)$.
+:::
+
+## Mathematical development {#sec-front-development}
+
+### Probabilistic programming and automatic differentiation {#sec-front-ad}
+
+A PPL such as Stan compiles a model block into a function computing $\log p(\theta,y)$ on an unconstrained parameter space (with Jacobian adjustments, @sec-bayes-paradigm), and uses **automatic differentiation** (AD) to obtain the gradient required by HMC [@carpenter2017stan; @baydin2018automatic]. AD is neither symbolic differentiation nor finite differencing. It applies the chain rule to the sequence of elementary operations that the program actually executes, so it is exact up to floating-point rounding.
+
+**Forward mode** propagates derivatives alongside values. Extend the reals to **dual numbers** $a+b\delta$ with $\delta^2=0$. For a smooth function $g$, Taylor's theorem suggests the definition
+$$
+g(a+b\delta)=g(a)+g'(a)\,b\,\delta,
+$$ {#eq-front-dual}
+and arithmetic follows from $\delta^2=0$: $(a+b\delta)(c+e\delta)=ac+(ae+bc)\delta$.
+
+::: {#prp-front-forward-ad}
+## Forward-mode AD is exact
+Let $f:\mathbb R^d\to\mathbb R$ be computed by a finite sequence of elementary operations (arithmetic and smooth univariate functions), each differentiable at the values it receives. Evaluating the same sequence on the dual vector $x+u\delta$, with each operation extended by @eq-front-dual and dual arithmetic, returns $f(x)+\{\nabla f(x)^\top u\}\,\delta$.
+:::
+
+::: {.proof}
+Write the computation as intermediate variables $v_1,\dots,v_K$, where $v_1,\dots,v_d$ are the inputs and each later $v_k=\phi_k(v_{j}: j\in\mathcal P_k)$ is an elementary function of earlier variables. Each $v_k$ is a differentiable function of $x$. We show by induction on $k$ that its dual evaluation equals $v_k(x)+\{\nabla v_k(x)^\top u\}\delta$. For the inputs, $v_i=x_i+u_i\delta$, and $\nabla x_i^\top u=u_i$. Suppose the claim holds for all $j<k$. For a univariate $\phi_k$ applied to $v_j$, @eq-front-dual gives $\phi_k(v_j)+\phi_k'(v_j)\{\nabla v_j^\top u\}\delta$, and by the chain rule $\nabla(\phi_k\circ v_j)^\top u=\phi_k'(v_j)\nabla v_j^\top u$. For binary arithmetic, the dual rules are the sum, product and quotient rules: for example, $(v_i+a\delta)(v_j+b\delta)=v_iv_j+(v_ib+v_ja)\delta$ and $\nabla(v_iv_j)^\top u=v_j\nabla v_i^\top u+v_i\nabla v_j^\top u$. The claim therefore holds for $v_k$, and for $k=K$ it gives the result.
+:::
+
+Forward mode with $u=e_k$ yields one partial derivative per pass, so a full gradient costs $d$ passes. **Reverse mode** records the computation and propagates adjoints $\bar v_k=\partial f/\partial v_k$ backwards from the output, obtaining the whole gradient in one backward sweep, at a cost that is a small constant multiple of the cost of evaluating $f$, independently of $d$ [@baydin2018automatic]. That is why Stan, and deep-learning libraries, use reverse mode for log densities with many parameters. The price is memory: the forward computation must be stored to be traversed backwards.
+
+### Approximate Bayesian computation {#sec-front-abc}
+
+When only simulation is possible, **rejection ABC** [@pritchard1999population; @beaumont2002approximate] repeats: draw $\theta^*\sim\pi$, simulate $Y^*\sim p(\cdot\mid\theta^*)$, and accept $\theta^*$ if $\rho(S(Y^*),S(y))\le\varepsilon$.
+
+::: {#prp-front-abc}
+## What ABC targets
+(i) The accepted draws of rejection ABC are exact draws from $\pi_\varepsilon(\theta\mid y)$ in @eq-front-abc. (ii) Suppose $S(Y^*)$ has a density $f_S(s\mid\theta)$ that is continuous in $s$ at $s_{\mathrm{obs}}=S(y)$ and bounded by a $\pi$-integrable function of $\theta$, uniformly for $s$ near $s_{\mathrm{obs}}$, and that $\int\pi(\theta)f_S(s_{\mathrm{obs}}\mid\theta)\,d\theta>0$. Then, as $\varepsilon\to0$, $\pi_\varepsilon(\theta\mid y)\to\pi(\theta\mid S(y)=s_{\mathrm{obs}})$ pointwise. (iii) If $S$ is sufficient for $\theta$, then $\pi(\theta\mid S(y))=\pi(\theta\mid y)$.
+:::
+
+::: {.proof}
+(i) The pair $(\theta^*,Y^*)$ has joint law $\pi(\theta)p(y^*\mid\theta)$, and accepting on the event $A=\{\rho(S(Y^*),s_{\mathrm{obs}})\le\varepsilon\}$ conditions on $A$. The $\theta$-marginal of the conditioned law is proportional to $\pi(\theta)\mathbb P_\theta(A)$, which is @eq-front-abc. (ii) Let $B_\varepsilon$ be the $\rho$-ball of radius $\varepsilon$ about $s_{\mathrm{obs}}$, with Lebesgue volume $|B_\varepsilon|$. Then $\mathbb P_\theta(A)/|B_\varepsilon|=|B_\varepsilon|^{-1}\int_{B_\varepsilon}f_S(s\mid\theta)\,ds\to f_S(s_{\mathrm{obs}}\mid\theta)$ by continuity. By dominated convergence, the normalising constants $\int\pi(\theta)\mathbb P_\theta(A)\,d\theta/|B_\varepsilon|$ converge to $\int\pi f_S(s_{\mathrm{obs}}\mid\cdot)>0$. The ratio therefore converges to $\pi(\theta)f_S(s_{\mathrm{obs}}\mid\theta)/\int\pi f_S$, which is the posterior given $S(y)=s_{\mathrm{obs}}$. (iii) By the factorisation theorem, $p(y\mid\theta)=g(S(y),\theta)h(y)$, so both posteriors are proportional to $\pi(\theta)g(s_{\mathrm{obs}},\theta)$.
+:::
+
+ABC therefore makes two approximations: **tolerance** ($\varepsilon>0$ smooths the posterior and inflates its spread) and **summaries** (an insufficient $S$ loses information, usually widening the posterior, and possibly shifting it). Sufficient statistics of fixed dimension exist essentially only for exponential families, which are exactly the models where ABC is unnecessary. Choosing summaries is therefore the central difficulty. Regression adjustment, ABC-MCMC [@marjoram2003markov], ABC-SMC, synthetic likelihood [@wood2010statistical] and neural methods that learn summaries or conditional densities [@cranmer2020frontier; @papamakarios2021normalizing] all address cost and summary choice. @marin2012approximate and @sisson2018handbook are comprehensive reviews.
+
+### Variational inference {#sec-front-vi}
+
+::: {#prp-front-elbo}
+## The evidence decomposition
+For any density $q$ with $q\ll\pi(\cdot\mid y)$,
+$$
+\log p(y)=\mathrm{ELBO}(q)+\mathrm{KL}\{q\,\|\,\pi(\cdot\mid y)\}.
+$$
+Consequently $\mathrm{ELBO}(q)\le\log p(y)$, and maximising the ELBO over $\mathcal Q$ is equivalent to minimising $\mathrm{KL}(q\,\|\,\pi(\cdot\mid y))$.
+:::
+
+::: {.proof}
+$\mathrm{KL}(q\|\pi(\cdot\mid y))=\mathbb E_q[\log q(\theta)-\log p(\theta,y)+\log p(y)]=-\mathrm{ELBO}(q)+\log p(y)$. Rearrange, and use $\mathrm{KL}\ge0$.
+:::
+
+The ELBO involves only the unnormalised posterior, so it can be estimated by Monte Carlo under $q$ and maximised by stochastic gradients. **ADVI** [@kucukelbir2017automatic] uses a Gaussian $q$ on the unconstrained space, writes $\theta=m+s\odot z$ with $z\sim\mathrm N(0,I)$ (the *reparameterisation* trick), and differentiates through the expectation:
+$$
+\nabla_m\mathrm{ELBO}=\mathbb E_z[\nabla\log p(m+s\odot z,y)],\qquad
+\nabla_{\omega_i}\mathrm{ELBO}=\mathbb E_z[\partial_i\log p(m+s\odot z,y)\,z_is_i]+1,
+$$
+with $s_i=e^{\omega_i}$. The $+1$ is the derivative of the Gaussian entropy $\sum_i\omega_i+\text{const}$. VI replaces sampling by optimisation, which is often much faster. But its target $q^\star$ is not the posterior, and the reverse KL divergence has a characteristic bias.
+
+::: {#prp-front-meanfield}
+## Mean-field Gaussian VI underestimates variance
+Let $\pi=\mathrm N(\mu,\Sigma)$ with precision $\Lambda=\Sigma^{-1}$, and let $\mathcal Q$ be the fully factorised Gaussians $\prod_i\mathrm N(m_i,s_i^2)$. Then $q^\star$ has $m=\mu$ and $s_i^2=1/\Lambda_{ii}$, and $1/\Lambda_{ii}\le\Sigma_{ii}$, with equality if and only if $\Sigma_{ij}=0$ for all $j\ne i$.
+:::
+
+::: {.proof}
+Up to constants, $\mathrm{KL}(q\|\pi)=\mathbb E_q[\frac12(\theta-\mu)^\top\Lambda(\theta-\mu)]-\sum_i\log s_i=\frac12(m-\mu)^\top\Lambda(m-\mu)+\frac12\sum_i\Lambda_{ii}s_i^2-\sum_i\log s_i$, using $\mathbb E_q[(\theta-m)(\theta-m)^\top]=\mathrm{diag}(s^2)$. The first term is minimised at $m=\mu$ because $\Lambda$ is positive definite. Each remaining term $\frac12\Lambda_{ii}s_i^2-\log s_i$ is minimised at $s_i^2=1/\Lambda_{ii}$. By the Cauchy–Schwarz inequality for the inner product $\langle a,b\rangle=a^\top\Sigma b$, $1=(e_i^\top e_i)^2=\langle e_i,\Lambda e_i\rangle^2\le\langle e_i,e_i\rangle\langle\Lambda e_i,\Lambda e_i\rangle=\Sigma_{ii}\Lambda_{ii}$. Equality holds if and only if $\Lambda e_i\propto e_i$, equivalently $\Sigma e_i\propto e_i$, i.e. $\Sigma_{ij}=0$ for $j\ne i$.
+:::
+
+For a bivariate Gaussian with unit variances and correlation $\rho$, the mean-field standard deviations are $\sqrt{1-\rho^2}$, which are the *conditional* rather than the marginal standard deviations. The reverse KL divergence $\mathrm{KL}(q\|\pi)$ heavily penalises $q$ placing mass where $\pi$ has little, so $q^\star$ fits inside the posterior. VI should therefore be checked, not assumed. @yao2018yes propose using the Pareto-$\hat k$ diagnostic of PSIS (@sec-importance) on the importance ratios $p(\theta,y)/q(\theta)$ for $\theta\sim q$. A small $\hat k$ indicates that $q$ is close enough for importance sampling to correct it, and a large $\hat k$ (above about 0.7) indicates an unreliable approximation. @blei2017variational review VI from a statistical perspective.
+
+### Scaling to large data: stochastic-gradient MCMC {#sec-front-sgmcmc}
+
+With $n$ observations, each evaluation of $\log\pi$ costs $O(n)$. **Stochastic gradient Langevin dynamics** (SGLD) [@welling2011bayesian] replaces the gradient in the unadjusted Langevin update by an unbiased minibatch estimate, and drops the Metropolis correction:
+$$
+\theta_{t+1}=\theta_t+\frac\epsilon2\Big\{\nabla\log\pi_0(\theta_t)+\frac nb\sum_{i\in B_t}\nabla\log p(y_i\mid\theta_t)\Big\}+\sqrt\epsilon\,\xi_t,\qquad\xi_t\sim\mathrm N(0,I).
+$$
+Each step costs $O(b)$ rather than $O(n)$. The chain is no longer reversible with respect to the posterior, and its stationary distribution is different. The Gaussian case can be solved exactly.
+
+::: {#prp-sgld-variance}
+## SGLD for a Gaussian mean
+Let $y_i\mid\theta\sim\mathrm N(\theta,1)$, $i=1,\dots,n$, with prior $\theta\sim\mathrm N(0,s_0^2)$, posterior precision $P=n+s_0^{-2}$ and posterior mean $\mu=P^{-1}\sum_iy_i$. Let minibatches of size $b$ be drawn with replacement, and write $\hat\sigma_y^2=n^{-1}\sum_i(y_i-\bar y)^2$. If $0<\epsilon<4/P$, SGLD has a unique stationary distribution, with mean $\mu$ and variance
+$$
+V_\epsilon=\frac{1+\epsilon n^2\hat\sigma_y^2/(4b)}{P\,(1-\epsilon P/4)},
+$$
+while the posterior variance is $1/P$. The chain's lag-one autocorrelation is $a=1-\epsilon P/2$, so its integrated autocorrelation time is $(1+a)/(1-a)\approx4/(\epsilon P)$ for small $\epsilon$.
+:::
+
+::: {.proof}
+The gradient estimate is $-\theta/s_0^2+\frac nb\sum_{i\in B}(y_i-\theta)=-P(\theta-\mu)+\eta$, where $\eta=\frac nb\sum_{i\in B}y_i-\sum_iy_i$ has mean zero and, because the $b$ indices are i.i.d. uniform, variance $\frac{n^2}{b}\hat\sigma_y^2$. Hence $\theta_{t+1}-\mu=a(\theta_t-\mu)+\frac\epsilon2\eta_t+\sqrt\epsilon\xi_t$, with $\eta_t$ and $\xi_t$ independent of the past and of each other. This is an AR(1) recursion. For $|a|<1$, i.e. $0<\epsilon<4/P$, it has a unique stationary distribution (@sec-markov-chains) with mean $\mu$ and variance $\{\epsilon+\epsilon^2n^2\hat\sigma_y^2/(4b)\}/(1-a^2)$. Since $1-a^2=\epsilon P(1-\epsilon P/4)$, the variance is $V_\epsilon$. For an AR(1) chain, $\sum_{k\in\mathbb Z}a^{|k|}=(1+a)/(1-a)$.
+:::
+
+Two sources of error appear. The factor $1/(1-\epsilon P/4)$ is the discretisation bias of unadjusted Langevin dynamics, and $\epsilon n^2\hat\sigma_y^2/(4b)$ is the **minibatch noise**, which is usually far larger: with $n=1000$, $b=10$ and $\epsilon=10^{-4}$ it is about $2.5\hat\sigma_y^2$. Shrinking $\epsilon$ removes both, but the autocorrelation time grows like $4/(\epsilon P)$. Reducing bias therefore costs mixing, and decreasing step sizes give consistency only asymptotically. Control-variate gradient estimators reduce the minibatch noise, and @nemeth2021stochastic review the field. Alternatives for tall data include subsampling MH with control variates and divide-and-conquer methods that combine subset posteriors, each with its own approximation [@bardenet2017markov].
+
+### High-dimensional inference {#sec-front-high-dim}
+
+The optimal-scaling results of @sec-adaptive and @sec-mcmc-theory summarise the cost of exact MCMC as the dimension $d$ grows, for product-form targets: random-walk Metropolis needs $O(d)$ iterations per independent draw [@roberts1997weak], MALA $O(d^{1/3})$ [@roberts1998optimal], and HMC $O(d^{1/4})$ leapfrog steps [@beskos2013optimal]. For posteriors that are absolutely continuous with respect to a Gaussian prior, function-space samplers such as pCN have dimension-independent acceptance rates [@cotter2013mcmc] (@sec-specialized). For latent Gaussian models, integrated nested Laplace approximations [@rue2009approximate] replace sampling by nested deterministic approximations, building on @tierney1986accurate. The practical lesson for high dimensions is that geometry (parameterisation, preconditioning, gradients) matters more than raw speed.
+
+### Misspecification and generalised Bayesian inference {#sec-front-robust}
+
+Bayes' theorem gives coherent updating *given the model*. When the model is wrong, the posterior concentrates (as $n\to\infty$) on the parameter minimising the KL divergence from the true data-generating process to the model, but its spread can be wrong, and credible intervals lose their frequentist calibration. Robust Bayesian analysis studies sensitivity over classes of priors and models [@berger1994overview]. **Generalised Bayesian** updating [@bissiri2016general] replaces the log-likelihood by a loss and introduces a learning rate $\eta$: $\pi_\eta(\theta\mid y)\propto\pi(\theta)\exp\{-\eta\sum_i\ell(\theta,y_i)\}$. With the negative log-likelihood as loss, this is the **power** (tempered) posterior, which @grunwald2017inconsistency show can repair inconsistency under misspecification.
+
+::: {#prp-front-power}
+## Calibration of a power posterior
+Model $y_i\sim\mathrm N(\theta,1)$ with a flat prior, but suppose the data are i.i.d. with mean $\theta_0$ and variance $\sigma^2$. The power posterior with learning rate $\eta$ is $\mathrm N(\bar y,1/(\eta n))$. Under the true distribution (exactly if the data are Gaussian, approximately by the CLT otherwise), its central 95% credible interval covers $\theta_0$ with probability $2\Phi\{1.96/(\sigma\sqrt\eta)\}-1$. The probability is $0.95$ exactly when $\eta=1/\sigma^2$.
+:::
+
+::: {.proof}
+$\pi_\eta(\theta\mid y)\propto\exp\{-\frac\eta2\sum_i(y_i-\theta)^2\}\propto\exp\{-\frac{\eta n}2(\theta-\bar y)^2\}$. The interval $\bar y\pm1.96/\sqrt{\eta n}$ covers $\theta_0$ iff $|\bar y-\theta_0|\le1.96/\sqrt{\eta n}$. Under the truth, $\sqrt n(\bar y-\theta_0)/\sigma\sim\mathrm N(0,1)$, so the probability is $\mathbb P(|Z|\le1.96/(\sigma\sqrt\eta))$.
+:::
+
+With $\sigma=2$ and $\eta=1$ (standard Bayes under the wrong variance) the coverage is $2\Phi(0.98)-1\approx0.67$. The difficulty in practice is that the right $\eta$ depends on the unknown truth. Methods for choosing it (SafeBayes, calibration by bootstrap or by matching information) are an active research area, and in simple cases like this one, enlarging the model (here, learning $\sigma^2$) is the better remedy.
+
+### Other active directions {#sec-front-other}
+
+- **Unbiased MCMC with couplings** [@jacob2020unbiased]: coupled chains that meet in finite time give unbiased estimators that can be averaged over parallel processors, removing burn-in bias.
+- **Pseudo-marginal and particle MCMC** [@andrieu2009pseudo; @andrieu2010particle]: exact MCMC using unbiased likelihood estimates (@sec-specialized, @sec-time-series).
+- **Normalising flows and neural density estimation** [@papamakarios2021normalizing]: flexible variational families, learned preconditioners for MCMC, and neural posterior estimation for simulators.
+- **Bayesian workflow** [@gelman2020bayesian]: treating model building, checking, computation and comparison as one iterative process. This book's emphasis on validation follows that view.
+
+### Reading and critiquing a research paper {#sec-front-reading}
+
+Independent study means reading primary literature critically. For a methodological paper in computational Bayesian statistics, work through these questions in order:
+
+1. **Target.** Which distribution does the method target: the exact posterior, a limit, or an approximation? Under what assumptions is it exact or consistent?
+2. **Claims and proofs.** Which results are proved, under which conditions, and which are only conjectured or shown empirically? Do the conditions hold in the examples?
+3. **Comparisons.** Are competitors tuned comparably? Is cost measured fairly (ESS per gradient evaluation or per second, @sec-mix-comparisons), and are all costs included, such as tuning, warm-up and pre-computation?
+4. **Monte Carlo error.** Are the reported performance measures accompanied by MCSEs or replications over seeds (@sec-eng-simulation)?
+5. **Scope.** Do the test problems include difficult geometry (funnels, multimodality, heavy tails, high dimension), or only problems that favour the method?
+6. **Validation.** Is correctness checked independently, for example by simulation-based calibration or by comparison with a gold-standard sampler?
+7. **Reproducibility.** Are code, data, seeds and software versions available? Can a headline result be reproduced in a day?
+
+Reproducing one figure of a paper with your own code, using the methods of this book, is the most effective way to understand it.
+
+## Worked example: ABC with sufficient and insufficient summaries {#sec-front-worked}
+
+Data: $n=25$ observations from $\mathrm N(\theta,1)$, prior $\theta\sim\mathrm N(0,3^2)$. The exact posterior is available from @sec-conjugate, so ABC's two approximations can be measured. We compare the sample mean (sufficient) and the sample median (insufficient) as summaries, and two acceptance fractions, using 50 000 simulations.
+
+```{r}
+#| label: front-abc
+set.seed(2701)
+n <- 25; y <- rnorm(n, 1.5, 1); s0 <- 3
+post <- normal_known_var_update(y, 1, 0, s0^2)
+r_prior <- function(k) rnorm(k, 0, s0); simulate <- function(th) rnorm(n, th, 1)
+settings <- list("mean, keep 1%" = list(mean, 0.01), "mean, keep 20%" = list(mean, 0.2),
+                 "median, keep 1%" = list(median, 0.01))
+abc_fits <- lapply(settings, function(s) abc_rejection(50000, r_prior, simulate, s[[1]], s[[1]](y), keep = s[[2]]))
+rbind(exact = c(mean = post$mean, sd = sqrt(post$var), eps = 0, accepted = NA),
+      t(sapply(abc_fits, function(f) c(mean = mean(f$draws), sd = sd(f$draws), eps = f$eps, accepted = length(f$draws))))) |> round(3)
+```
+
+```{r}
+#| label: fig-front-abc
+#| fig-cap: "ABC posteriors for the normal mean compared with the exact posterior (black). With the sufficient summary and a small tolerance (blue), ABC matches the posterior. A large tolerance (orange) inflates the spread, and the insufficient median summary (aqua) is wider."
+grid <- seq(0.5, 3, length.out = 400)
+plot(grid, dnorm(grid, post$mean, sqrt(post$var)), type = "l", lwd = 2, col = course_ink, ylim = c(0, 2.2),
+     xlab = expression(theta), ylab = "density")
+for (k in seq_along(abc_fits)) lines(density(abc_fits[[k]]$draws, adjust = 1.2), lwd = 2, col = course_cols[k])
+legend("topright", c("exact", names(abc_fits)), col = c(course_ink, course_cols[1:3]), lwd = 2, bty = "n")
+```
+
+With the sufficient summary and keep fraction 1%, the tolerance is about $0.014$ (in MAD units of the simulated means). The ABC mean and standard deviation agree with the exact values within Monte Carlo error: the standard deviation is about 5% larger, and the MCSE of a standard deviation from 500 draws is about 3%. With keep fraction 20% the tolerance is about 0.3, and the ABC posterior is nearly three times as wide as the exact posterior. Here $\pi_\varepsilon$ is visibly a different distribution (@prp-front-abc (i)). The median-based posterior is wider by about a quarter even at a small tolerance, because the median is less efficient than the mean for normal data (asymptotic efficiency $2/\pi$, so the standard deviation is inflated by about $\sqrt{\pi/2}\approx1.25$). Its centre is also shifted, because the observed median differs from the observed mean.
+
+## R implementation {#sec-front-r}
+
+```{r}
+#| file: R/utilities/autodiff.R
+```
+
+```{r}
+#| file: R/samplers/approximate.R
+```
+
+Forward-mode AD on the `birthwt` logistic regression (@sec-specialized) reproduces the hand-coded gradient to rounding error. The function `f` below is ordinary R code: dual arithmetic is supplied by S3 methods for `Ops`, `Math` and `Summary`.
+
+```{r}
+#| label: front-ad
+bw <- MASS::birthwt; std <- function(v) (v - mean(v)) / sd(v)
+X <- with(bw, cbind(intercept = 1, age = std(age), lwt = std(lwt), smoke = smoke, ht = ht, ui = ui, ptd = as.numeric(ptl > 0)))
+m <- logistic_regression_model(X, bw$low, prior_sd = 2.5)
+f <- function(b) {
+  eta <- b[1] * X[, 1] + b[2] * X[, 2] + b[3] * X[, 3] + b[4] * X[, 4] + b[5] * X[, 5] + b[6] * X[, 6] + b[7] * X[, 7]
+  sum(bw$low * eta - log1p(exp(eta))) - sum(b * b) / (2 * 2.5^2)
+}
+b0 <- seq(-0.3, 0.3, length.out = 7)
+rbind(forward_ad = ad_gradient(f, b0), hand_coded = m$grad(b0), finite_diff = numerical_gradient(m$log_density, b0)) |> signif(8)
+c(max_abs_diff_ad = max(abs(ad_gradient(f, b0) - m$grad(b0))),
+  max_abs_diff_fd = max(abs(numerical_gradient(m$log_density, b0) - m$grad(b0))))
+```
+
+The forward-mode gradient agrees with the analytic gradient to about machine precision, while the finite-difference gradient carries truncation and rounding error several orders of magnitude larger.
+
+## Computational experiments {#sec-front-experiment}
+
+### Variational inference versus MCMC {#sec-front-exp-vi}
+
+First, the bivariate Gaussian of @prp-front-meanfield, for several correlations:
+
+```{r}
+#| label: front-vi-gauss
+set.seed(2705)
+t(sapply(c(0.5, 0.9, 0.99), function(r) {
+  tg <- target_correlated_gaussian(r)
+  v <- advi_meanfield(tg$log_density, tg$grad, c(0.2, -0.2), n_iter = 4000)
+  c(rho = r, advi_sd = mean(v$sd), theory_sqrt_1_minus_rho2 = sqrt(1 - r^2), true_marginal_sd = 1)
+})) |> round(3)
+```
+
+ADVI's standard deviations agree with the theoretical $1/\sqrt{\Lambda_{ii}}=\sqrt{1-\rho^2}$, the stochastic optimisation error being a few per cent, and they are far smaller than the true marginal standard deviation of 1 when the correlation is strong.
+
+Next, the `birthwt` logistic regression, with HMC (preconditioned by the Laplace covariance) as the reference:
+
+```{r}
+#| label: front-vi-birthwt
+hess <- function(b) { pr <- inv_logit(as.vector(X %*% b)); -crossprod(X * (pr * (1 - pr)), X) - diag(1 / 2.5^2, ncol(X)) }
+la <- laplace_approximation(m$log_density, m$grad, hess, rep(0, ncol(X)))
+set.seed(2706)
+vi <- advi_meanfield(m$log_density, m$grad, rep(0, ncol(X)), n_iter = 5000)
+chains <- lapply(1:4, function(k) hmc_sampler(m$log_density, m$grad, la$mode + rnorm(7, 0, 0.1), 2000,
+                                               step_size = 0.5, n_steps = 6, inv_mass = diag(la$cov))$draws[-(1:500), ])
+hmc_draws <- do.call(rbind, chains)
+cbind(hmc_mean = colMeans(hmc_draws), advi_mean = vi$mean, hmc_sd = apply(hmc_draws, 2, sd), advi_sd = vi$sd,
+      meanfield_theory_sd = 1 / sqrt(diag(solve(la$cov))), sd_ratio = vi$sd / apply(hmc_draws, 2, sd)) |> round(3)
+```
+
+```{r}
+#| label: front-vi-khat
+q_draws <- vi$draw(4000)
+log_ratio <- apply(q_draws, 1, m$log_density) - apply(q_draws, 1, vi$log_q)
+c(pareto_k = loo::pareto_k_values(suppressWarnings(loo::psis(log_ratio, r_eff = 1))))
+```
+
+The ADVI means are close to the HMC means. Its standard deviations are smaller for every coefficient, most strongly for the intercept and `smoke`, which are the most correlated with other coefficients in the posterior. They closely match the "mean-field theory" column, $1/\sqrt{\Lambda_{ii}}$ computed from the Laplace precision. This is @prp-front-meanfield at work in a non-Gaussian posterior that is nearly Gaussian. The Pareto-$\hat k$ diagnostic is around 0.6. That flags an imperfect approximation: in the guidance of @yao2018yes, between 0.5 and 0.7 is usable with caution, and importance-weighting corrections are noisy. An analysis that reported ADVI intervals here would understate uncertainty for the effect of smoking by about a quarter.
+
+### The SGLD trade-off {#sec-front-exp-sgld}
+
+We run SGLD on the Gaussian-mean model of @prp-sgld-variance ($n=1000$, $s_0=10$), for three step sizes and two batch sizes, and compare the ratio of the chain's standard deviation to the posterior standard deviation with the theory.
+
+```{r}
+#| label: front-sgld
+set.seed(2703)
+y_big <- rnorm(1000, 2, 1); s0 <- 10
+grid <- expand.grid(step = c(2e-5, 1e-4, 5e-4), batch = c(10, 100))
+do.call(rbind, lapply(seq_len(nrow(grid)), function(i) {
+  st <- grid$step[i]; b <- grid$batch[i]; th <- sgld_gaussian_stationary(y_big, s0, b, st)
+  d <- sgld_sampler(function(t) -t / s0^2, function(t, rows) sum(rows - t), y_big, th[["mean"]], 100000, b, st)[, 1]
+  data.frame(step = st, batch = b, sd_ratio_theory = sqrt(th[["var"]] / th[["posterior_var"]]),
+             sd_ratio_sim = sd(d) / sqrt(th[["posterior_var"]]), iat_theory = (1 + th[["ar_coefficient"]]) / (1 - th[["ar_coefficient"]]),
+             iat_est = length(d) / ess_mean(d))
+})) |> transform(sd_ratio_theory = round(sd_ratio_theory, 3), sd_ratio_sim = round(sd_ratio_sim, 3),
+                 iat_theory = round(iat_theory), iat_est = round(iat_est))
+```
+
+The simulated spreads match @prp-sgld-variance. With $b=10$ and $\epsilon=5\times10^{-4}$, SGLD's "posterior" is about four times too wide, and even the smallest step leaves a visible inflation with $b=10$. Small steps reduce the bias, but the autocorrelation time grows to about 200. Equivalently, the effective number of independent draws per unit of computation falls in proportion to $\epsilon$. Since $P=n+s_0^{-2}$ here, the posterior is $\mathrm N(\mu,1/P)$, and an exact Gibbs draw would cost $O(n)$. SGLD's advantage appears only when $n$ is so large that a single full-data gradient is expensive, and it comes at the price of an approximation whose size must be checked.
+
+### Misspecification and the power posterior {#sec-front-exp-power}
+
+We fit $\mathrm N(\theta,1)$ to data from $\mathrm N(0,2^2)$ with $n=50$ and estimate, over 4000 replications, the coverage of 95% intervals from the standard posterior ($\eta=1$), the oracle power posterior ($\eta=1/4$) and a plug-in power posterior ($\hat\eta=1/s^2$).
+
+```{r}
+#| label: front-power
+set.seed(2704)
+R <- 4000; n <- 50; sigma <- 2
+cover <- function(eta_fun) mean(replicate(R, { yy <- rnorm(n, 0, sigma); abs(mean(yy)) <= 1.96 / sqrt(eta_fun(yy) * n) }))
+cov_hat <- c(eta_1 = cover(function(yy) 1), eta_quarter = cover(function(yy) 0.25), eta_plugin = cover(function(yy) 1 / var(yy)))
+rbind(coverage = cov_hat, mcse = sqrt(cov_hat * (1 - cov_hat) / R),
+      theory = c(2 * pnorm(1.96 / sigma) - 1, 2 * pnorm(1.96 / (sigma * sqrt(0.25))) - 1, NA)) |> round(3)
+```
+
+Standard Bayesian intervals under the misspecified variance cover only about two-thirds of the time, exactly as @prp-front-power predicts. The oracle learning rate restores nominal coverage. The plug-in rate nearly does: slightly under 95%, because estimating $\sigma^2$ adds uncertainty that a $t$ interval would account for. That plug-in answer is just what a model learning $\sigma^2$ would give, which illustrates the general point that improving the model is often preferable to tempering.
+
+## Diagnostics and validation {#sec-front-validation}
+
+Every approximate method should be checked against what it approximates:
+
+- **ABC**: report the tolerance and the acceptance count; check sensitivity to the tolerance and to the summaries; validate the procedure with simulation-based calibration on simulated data sets (ABC posteriors are calibrated with respect to $\pi_\varepsilon$, so SBC tests the *combined* approximation); and use posterior predictive checks on statistics that were not used as summaries.
+- **VI**: compute Pareto-$\hat k$ for the importance ratios [@yao2018yes]; compare with MCMC on a subsample or a simplified model; run the optimisation from several initial values and check the ELBO trace for convergence.
+- **SG-MCMC**: compare with exact MCMC on a subsample; vary the step size and batch size and check how the estimates move. Remember that standard MCMC diagnostics (R̂, ESS) assess the convergence of the chain to *its* stationary distribution, not that distribution's distance from the posterior.
+- **Generalised Bayes**: check calibration by simulation from plausible data-generating processes, including misspecified ones.
+
+## Interpretation {#sec-front-interpretation}
+
+The methods of this chapter enlarge the class of problems Bayesian computation can address, at a cost: the distribution computed is no longer the posterior. The disciplined response is the one this book has advocated throughout. State the target, derive or measure its distance from the posterior, and validate by simulation. An approximate method with a quantified error is a legitimate tool; an approximate method treated as exact is a source of false confidence.
+
+## Limitations and common errors {#sec-front-errors}
+
+- **Treating VI uncertainty as posterior uncertainty.** Mean-field VI systematically understates variances in the presence of posterior correlation (@prp-front-meanfield).
+- **Reporting ABC results without the tolerance, the summaries and a sensitivity analysis.**
+- **Assuming summaries are sufficient** for models outside exponential families.
+- **Running SGLD with a constant step size and treating the output as exact**, or applying MCMC convergence diagnostics as if they measured the approximation error.
+- **Using AD on code with non-differentiable branches** (`if`, `abs`, `max`) without checking the derivative at points where the branch changes.
+- **Adopting a new method from a paper without reproducing its key claims on problems with known answers.**
+- This chapter's demonstrations use simple models with exact answers on purpose. Behaviour on hard problems can be worse, and is the subject of current research.
+
+## Chapter summary {#sec-front-summary}
+
+- PPLs separate models from inference; automatic differentiation provides exact gradients (@prp-front-forward-ad), forward mode at $d$ passes and reverse mode at a small constant multiple of one evaluation.
+- Rejection ABC targets $\pi_\varepsilon$ (@eq-front-abc), which converges to the posterior given the summaries as $\varepsilon\to0$ and equals the full posterior only for sufficient summaries (@prp-front-abc).
+- VI maximises the ELBO, equivalently minimises $\mathrm{KL}(q\|\pi)$ (@prp-front-elbo). Mean-field Gaussian VI underestimates marginal variances (@prp-front-meanfield), and Pareto-$\hat k$ diagnoses the quality of the approximation.
+- SGLD trades minibatch noise and discretisation bias against mixing (@prp-sgld-variance).
+- Under misspecification posterior intervals can be miscalibrated (@prp-front-power), and generalised Bayesian methods and model expansion respond to it.
+- Read papers by asking what each method targets, how it is validated, and whether comparisons are fair and reproducible.
+
+## Exercises {#sec-front-exercises}
+
+::: {#exr-front-1}
+**[Mathematical ★]** Using @prp-front-elbo, show that for any $q$, $\mathrm{ELBO}(q)=\log p(y)$ if and only if $q=\pi(\cdot\mid y)$ almost everywhere. Explain why the ELBO can nevertheless be used to compare *models* only with caution.
+:::
+
+::: {#exr-front-2}
+**[Mathematical ★★]** For $\pi=\mathrm N(\mu,\Sigma)$, find the fully factorised Gaussian that minimises the *forward* divergence $\mathrm{KL}(\pi\|q)$, and compare with @prp-front-meanfield. Which divergence does expectation propagation target locally?
+:::
+
+::: {#exr-front-3}
+**[R ★★]** Extend the dual-number class with `pnorm` (via $\phi$) and use it to differentiate the probit log-likelihood of the `birthwt` model. Check the result against `numerical_gradient()`.
+:::
+
+::: {#exr-front-4}
+**[R ★★]** Apply `abc_rejection()` to $y_i\sim\mathrm{Poisson}(\lambda)$, $\lambda\sim\mathrm{Gamma}(2,1)$, $n=30$, with (a) $\sum_iy_i$ and (b) the number of zeros as summaries. Compare both ABC posteriors with the exact Gamma posterior, and explain the difference using @prp-front-abc.
+:::
+
+::: {#exr-front-5}
+**[Mathematical ★★]** In @prp-sgld-variance, suppose the computational budget is fixed at $C$ gradient evaluations of single observations, so a run has $C/b$ iterations. Using the effective sample size $(C/b)/\mathrm{IAT}$ and the variance inflation $V_\epsilon P$, discuss how $b$ and $\epsilon$ trade off. Show that the minibatch-noise term in $V_\epsilon$ depends on $\epsilon$ and $b$ only through $\epsilon/b$.
+:::
+
+::: {#exr-front-6}
+**[Simulation ★★]** Repeat the power-posterior experiment with $n=10$ and with heavy-tailed data ($t_3$, scaled to variance 4). Report coverage with MCSEs for $\eta=1$, $\eta=1/4$ and the plug-in $\hat\eta=1/s^2$, and explain the differences.
+:::
+
+::: {#exr-front-7}
+**[Critique ★★★]** A paper abstract states: "Our new sampler is 100 times faster than NUTS on a hierarchical model, as measured by wall-clock time to 1000 samples." Using @sec-front-reading, list the questions you would ask before believing the claim, and design a fair comparison.
+:::
+
+::: {#exr-front-8}
+**[Research ★★★]** Implement synthetic likelihood [@wood2010statistical] for the normal-mean example with the median summary: at each MH step, simulate $M=50$ data sets, fit a normal distribution to the simulated medians, and use its density at the observed median as the likelihood. Compare the result with ABC and with the exact posterior.
+:::
+
+## Further reading {#sec-front-reading-list}
+
+- @baydin2018automatic: automatic differentiation in machine learning, a survey.
+- @carpenter2017stan: the Stan language and its inference engine.
+- @marin2012approximate and @sisson2018handbook: ABC reviews and handbook. @cranmer2020frontier: simulation-based inference.
+- @blei2017variational, @kucukelbir2017automatic and @yao2018yes: VI, ADVI and its diagnostics.
+- @nemeth2021stochastic and @bardenet2017markov: MCMC for tall data.
+- @bissiri2016general and @grunwald2017inconsistency: generalised and tempered Bayesian inference.
+- @jacob2020unbiased: unbiased MCMC with couplings.
+- @gelman2020bayesian: Bayesian workflow.
+
+**Continuing beyond this book.** Choose one method from this chapter, reproduce a key figure from its original paper using the course code, then extend it to a problem from your own field. Journals that publish computational Bayesian methods include *Bayesian Analysis*, *Statistics and Computing*, the *Journal of Computational and Graphical Statistics* and the *Journal of the Royal Statistical Society, Series B*. Preprints appear on arXiv (stat.CO and stat.ME).
+
+## Solutions {#sec-front-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-front-1
+$\mathrm{ELBO}(q)=\log p(y)$ iff $\mathrm{KL}(q\|\pi(\cdot\mid y))=0$, which (Gibbs' inequality) holds iff $q=\pi(\cdot\mid y)$ a.e. For model comparison the ELBO is only a lower bound on $\log p(y)$, and the gap $\mathrm{KL}(q^\star\|\pi)$ differs between models. A higher ELBO may therefore reflect a better variational approximation rather than a larger evidence.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-front-2
+$\mathrm{KL}(\pi\|q)=-\mathbb E_\pi[\log q]+\text{const}=\sum_i\{\log s_i+\mathbb E_\pi[(\theta_i-m_i)^2]/(2s_i^2)\}+\text{const}$. This is minimised at $m_i=\mu_i$ and $s_i^2=\Sigma_{ii}$: the forward KL *matches moments*, giving the correct marginal variances (but no correlation). Expectation propagation minimises the forward KL locally, site by site, which is why it tends to cover the posterior rather than fit inside it.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-front-3
+`pnorm` is not in the `Math` group generic, so define a function `pnorm_dual <- function(x) dual(pnorm(x$v), dnorm(x$v) * x$d)` and use it in the log-likelihood `sum(y * log(pnorm_dual(eta)) + (1 - y) * log(1 - pnorm_dual(eta)))`. For numerical stability, use `pnorm(..., log.p = TRUE)` with derivative $\phi(v)/\Phi(v)$. The gradient agrees with `numerical_gradient()` to about $10^{-7}$ (the finite-difference error).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-front-4
+The exact posterior is $\mathrm{Gamma}(2+\sum y_i,1+n)$. With $\sum y_i$ (sufficient), ABC with a small tolerance matches it (@prp-front-abc (iii); for discrete summaries, $\varepsilon=0$ is feasible and gives an exact result). The number of zeros has mean $n e^{-\lambda}$ and carries information about $\lambda$, but less, so its ABC posterior is wider, increasingly so for large $\lambda$ where zeros are rare.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-front-5
+The minibatch term is $\epsilon n^2\hat\sigma_y^2/(4b)$, a function of $\epsilon/b$ only. With $C$ fixed, the number of iterations is $C/b$ and the IAT is about $4/(\epsilon P)$, so the ESS is about $C\epsilon P/(4b)$, also a function of $\epsilon/b$. Larger batches with proportionally larger steps leave both the noise term and the ESS unchanged, but increase the discretisation term $1/(1-\epsilon P/4)$, which also limits $\epsilon<4/P$. The relevant bias–variance trade-off is therefore between the inflation $\propto\epsilon/b$ and the ESS $\propto\epsilon/b$: halving the inflation halves the effective sample size.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-front-6
+With $n=10$ the plug-in interval undercovers noticeably (about 92%), because the $t_9$ quantile 2.26 should replace 1.96. With $t_3$ data the CLT still gives coverage near the theoretical values for $n=50$. For $n=10$, departures appear, because $\bar y$ is non-normal and $s^2$ is highly variable for heavy-tailed data, so the plug-in rate is unstable.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-front-7
+Questions to ask:
+- Were both samplers run to convergence, and validated? Is "1000 samples" 1000 *effective* draws? NUTS produces fewer, better draws, so ESS per second (bulk and tail) must be compared.
+- Which parameterisation was used? A centred hierarchy disadvantages NUTS, while the non-centred form may remove the gap.
+- Were warm-up and tuning included in the time? Were the same hardware, number of chains and implementation language used?
+- Were the results replicated over seeds and models?
+
+A fair design compares ESS per second, with MCSEs over 20 or more seeds. It uses both parameterisations, reports divergences and R̂, uses SBC or a gold standard for correctness, and makes code and environment public.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-front-8
+For each proposed $\theta$, simulate 50 medians, compute their mean $\hat\mu(\theta)$ and variance $\hat v(\theta)$, and use $\log\phi(s_{\mathrm{obs}};\hat\mu,\hat v)$ in the MH ratio. Fresh simulations at each step make this a noisy MH algorithm: with the same simulations reused for the current state, it is a pseudo-marginal-type sampler for a slightly biased target. The result is close to the median-ABC posterior (both use the same summary), and wider than the exact posterior by about $\sqrt{\pi/2}$.
+:::

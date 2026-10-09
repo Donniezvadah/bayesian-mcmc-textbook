@@ -1,0 +1,151 @@
+/* Course-wide refinements layered on top of the Quarto book template.
+   Colors come from the active Bootstrap theme through CSS variables so the
+   same rules work in light and dark mode. */
+
+/* ---------- Headings and prose ---------- */
+h1, h2, h3, h4, .title, .quarto-title .title {
+  letter-spacing: -0.005em;
+}
+#title-block-header .subtitle {
+  font-family: var(--bs-body-font-family);
+  font-style: italic;
+  font-weight: 400;
+}
+main p, main li {
+  hyphens: auto;
+  -webkit-hyphens: auto;
+}
+main h2 {
+  margin-top: 2.2rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--bs-border-color);
+}
+main h3 { margin-top: 1.6rem; }
+
+/* ---------- Theorem-like environments ---------- */
+.theorem, .lemma, .proposition, .corollary, .conjecture {
+  border-left: 3px solid var(--bs-primary);
+  background: rgba(var(--bs-primary-rgb), 0.045);
+  padding: 0.7rem 1rem 0.2rem 1rem;
+  margin: 1.2rem 0;
+  border-radius: 2px;
+}
+.definition {
+  border-left: 3px solid var(--bs-secondary);
+  padding: 0.6rem 1rem 0.1rem 1rem;
+  margin: 1.2rem 0;
+}
+.example {
+  border-left: 3px dotted var(--bs-secondary);
+  padding: 0.4rem 1rem 0.1rem 1rem;
+  margin: 1.2rem 0;
+}
+.exercise {
+  border-top: 1px solid var(--bs-border-color);
+  padding-top: 0.6rem;
+  margin: 1.2rem 0 1rem 0;
+}
+.theorem-title, .definition .theorem-title {
+  font-family: "Source Sans 3", "Source Sans Pro", sans-serif;
+  font-weight: 700;
+}
+.proof {
+  margin: 0.6rem 0 1.2rem 0;
+  padding-left: 1rem;
+  border-left: 1px solid var(--bs-border-color);
+}
+.proof > p:last-child::after {
+  content: "\220E";            /* end-of-proof tombstone */
+  float: right;
+  color: var(--bs-secondary);
+}
+.proof-title { font-style: italic; font-weight: 600; }
+
+/* ---------- Chapter opening block ---------- */
+.chapter-meta {
+  font-family: "Source Sans 3", "Source Sans Pro", sans-serif;
+  font-size: 0.95rem;
+}
+.difficulty {
+  font-family: "Source Sans 3", "Source Sans Pro", sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--bs-secondary);
+  text-transform: uppercase;
+}
+
+/* ---------- Code ---------- */
+div.sourceCode, pre.sourceCode {
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+.cell-output pre, .cell-output-stdout pre {
+  font-size: 0.84rem;
+  border-left: 3px solid var(--bs-border-color);
+  padding-left: 0.8rem;
+}
+code { font-size: 0.88em; }
+
+/* ---------- Figures and tables ---------- */
+.quarto-figure img, .cell-output-display img {
+  max-width: 100%;
+  height: auto;
+}
+/* Static R figures are rendered on a white surface; give them a quiet frame in
+   dark mode so they do not glare against the page. */
+[data-bs-theme="dark"] .cell-output-display img,
+body.quarto-dark .cell-output-display img {
+  background: #ffffff;
+  border-radius: 3px;
+  padding: 4px;
+}
+main table {
+  font-size: 0.92rem;
+}
+.table-responsive, main .cell-output-display {
+  overflow-x: auto;
+}
+main table th {
+  font-family: "Source Sans 3", "Source Sans Pro", sans-serif;
+}
+
+/* ---------- Math ---------- */
+mjx-container[display="true"] {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  padding: 0.15rem 0;
+}
+
+/* ---------- Homepage ---------- */
+.pathway td:first-child { white-space: nowrap; font-weight: 600; }
+.home-start a.btn {
+  font-family: "Source Sans 3", "Source Sans Pro", sans-serif;
+  font-weight: 600;
+}
+
+/* ---------- Small screens ---------- */
+@media (max-width: 767.98px) {
+  html { font-size: 16px; }
+  .theorem, .lemma, .proposition, .corollary, .definition, .example {
+    padding-left: 0.7rem; padding-right: 0.5rem;
+  }
+  .pathway td:first-child { white-space: normal; }
+  /* Wide tables (rubric, distributions, datasets) scroll inside their own box
+     instead of widening the page. */
+  main.content table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* Long display equations scroll rather than overflow. */
+  main.content mjx-container[display="true"] { overflow-x: auto; overflow-y: hidden; max-width: 100%; }
+}
+
+/* ---------- Print ---------- */
+@media print {
+  .sidebar, #quarto-sidebar, #TOC, .quarto-secondary-nav, nav.page-navigation { display: none !important; }
+  .callout { break-inside: avoid; }
+}

@@ -1,0 +1,213 @@
+# Project 4: Gibbs Sampling for a Hierarchical Model {#sec-project-4 .unnumbered}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Project at a glance
+
+**Prerequisites:** @sec-gibbs, @sec-diagnostics, @sec-validation, @sec-hierarchical.
+**Effort:** about 15–20 hours.
+**Deliverable:** R code for two samplers with tests, an SBC study, and a report (at most 10 pages).
+**Skills:** deriving full conditional distributions; Metropolis-within-Gibbs; centred and non-centred parameterisations; diagnosing mixing; validating parameter recovery.
+:::
+
+## Scientific question {#sec-p4-question}
+
+How much do six feed supplements differ in their effect on the weight of chicks, and how much should the estimate for each feed borrow strength from the others?
+
+## Data {#sec-p4-data}
+
+`datasets::chickwts` records the weight in grams at six weeks of age of 71 newly hatched chicks randomly allocated to six feed supplements (casein, horsebean, linseed, meatmeal, soybean, sunflower), with 10–14 chicks per group. The R documentation gives the source as @snedecor1948query and cites @mcneil1977interactive as a reference. There are no missing values, and the data are distributed with R ("Part of R", GPL). We use weight in grams without transformation.
+
+## Model {#sec-p4-model}
+
+For chick $i$ in feed group $j$ ($j=1,\dots,J=6$):
+$$
+y_{ij}\mid\theta_j,\sigma^2\sim\mathrm N(\theta_j,\sigma^2),\qquad \theta_j\mid\mu,\tau\sim\mathrm N(\mu,\tau^2),
+$$
+$$
+\mu\sim\mathrm N(250,100^2),\qquad \tau\sim\mathrm N^+(0,100^2),\qquad \sigma^2\sim\mathrm{IG}(2,\,2\times50^2).
+$$
+The prior scales are weakly informative for chick weights of a few hundred grams. Task 1 asks you to check them with a prior predictive simulation. The non-centred form writes $\theta_j=\mu+\tau\eta_j$ with $\eta_j\sim\mathrm N(0,1)$.
+
+## Tasks {#sec-p4-tasks}
+
+**Task 1 (prior predictive).** Simulate data sets from the prior, and check that the implied group means and individual weights are plausible for six-week-old chicks.
+
+**Task 2 (derivations).** Derive the full conditionals of $\theta_j$, $\mu$ and $\sigma^2$ in the centred parameterisation. Show that the conditional of $\tau$ is not a standard distribution, and design a Metropolis step for $\log\tau$, including the Jacobian.
+
+**Task 3 (non-centred sampler).** In the non-centred parameterisation, show that $(\mu,\tau)\mid\eta,\sigma^2,y$ is bivariate normal if the prior on $\tau$ is extended to the symmetric $\mathrm N(0,100^2)$ on $\mathbb R$, and that reporting $|\tau|$ gives the half-normal prior. This is parameter expansion (@sec-gibbs). Derive the conditional of each $\eta_j$.
+
+**Task 4 (implementation and tests).** Implement both samplers. Test them on data simulated from known parameters, and check deterministic properties: for example, $\sigma$ draws must be positive, and the output dimensions must be correct.
+
+**Task 5 (mixing).** Run four chains of each sampler:
+- on `chickwts`;
+- on a low-information synthetic data set with 8 groups of 2 observations and $\tau=5$.
+
+Compare $\widehat R$, bulk- and tail-ESS. Explain which parameterisation wins in each case, and why [@papaspiliopoulos2007general].
+
+**Task 6 (parameter recovery).** Validate the preferred sampler by simulation-based calibration (@sec-validation): at least 200 data sets drawn from the prior with the `chickwts` design, ranks for $\mu$, $\tau$ and $\sigma$, and a uniformity test.
+
+**Task 7 (interpretation).** Report the posterior of each $\theta_j$ alongside the raw group mean, explain the shrinkage, and compute the posterior probability that casein outperforms sunflower and the posterior distribution of the difference between the best and worst feeds.
+
+## Starter code {#sec-p4-starter}
+
+```{r}
+#| label: p4-starter
+with(chickwts, cbind(n = tapply(weight, feed, length), mean = tapply(weight, feed, mean), sd = tapply(weight, feed, sd))) |> round(1)
+```
+
+## Assessment {#sec-p4-assessment}
+
+Assessed with the [capstone rubric](capstone.qmd#sec-capstone-rubric). The emphasis is on correct derivations (Tasks 2–3), validation (Tasks 4, 6), and interpretation of the mixing results (Task 5).
+
+## Solution guide {#sec-p4-solutions}
+
+::: {.callout-tip collapse="true"}
+## Task 1
+```{r}
+#| label: p4-prior-pred
+set.seed(400)
+pp <- replicate(2000, { mu <- rnorm(1, 250, 100); tau <- abs(rnorm(1, 0, 100)); s <- sqrt(1 / rgamma(1, 2, 2 * 50^2))
+                        th <- rnorm(6, mu, tau); c(min_mean = min(th), max_mean = max(th), y = rnorm(1, th[1], s)) })
+apply(pp, 1, quantile, c(0.05, 0.5, 0.95)) |> round(0)
+```
+Across prior simulations, the smallest of the six group means has a 90% range of about $-110$ to $150$ g, the largest about $150$ to $610$ g, and a single chick's weight about $0$ to $510$ g. The prior therefore allows implausible values, including negative weights, in a small fraction of simulations, but it is wide rather than misleading for chicks whose observed weights are 100–420 g. A model on the log scale would rule out negative weights entirely. Here it makes little difference, because the likelihood concentrates far from 0, but you should say so explicitly.
+:::
+
+::: {.callout-tip collapse="true"}
+## Tasks 2–3: derivations
+*Centred.* With $n_j$ chicks and mean $\bar y_j$ in group $j$, and $N=\sum_jn_j$:
+$$
+\theta_j\mid\cdot\sim\mathrm N\Big(\frac{n_j\bar y_j/\sigma^2+\mu/\tau^2}{n_j/\sigma^2+1/\tau^2},\ \frac1{n_j/\sigma^2+1/\tau^2}\Big),\qquad
+\mu\mid\cdot\sim\mathrm N\Big(\frac{\sum_j\theta_j/\tau^2+m_0/s_0^2}{J/\tau^2+1/s_0^2},\ \frac1{J/\tau^2+1/s_0^2}\Big),
+$$
+$$
+\sigma^2\mid\cdot\sim\mathrm{IG}\Big(a+\tfrac N2,\ b+\tfrac12\textstyle\sum_{ij}(y_{ij}-\theta_j)^2\Big),\qquad
+p(\tau\mid\cdot)\propto\tau^{-J}\exp\Big\{-\frac{\sum_j(\theta_j-\mu)^2}{2\tau^2}-\frac{\tau^2}{2s_\tau^2}\Big\},\ \tau>0.
+$$
+On $\ell=\log\tau$, the target gains the Jacobian $e^\ell$, so the log conditional is $-(J-1)\ell-S/(2e^{2\ell})-e^{2\ell}/(2s_\tau^2)$ with $S=\sum_j(\theta_j-\mu)^2$.
+
+*Non-centred.* Given $\eta$ and $\sigma^2$, $y_{ij}=\mu+\tau\eta_j+\varepsilon_{ij}$ is a linear regression with design rows $(1,\eta_j)$. With independent normal priors on $\mu$ and $\tau\in\mathbb R$, $(\mu,\tau)$ is bivariate normal with precision $P_0+Z^\top Z/\sigma^2$ (@sec-regression). Each $\eta_j\mid\cdot\sim\mathrm N\big(\tau r_j/\sigma^2\,/\,(n_j\tau^2/\sigma^2+1),\ 1/(n_j\tau^2/\sigma^2+1)\big)$ with $r_j=\sum_i(y_{ij}-\mu)$. The posterior is invariant under $(\tau,\eta)\mapsto(-\tau,-\eta)$, so $|\tau|$ has the half-normal-prior posterior.
+:::
+
+::: {.callout-tip collapse="true"}
+## Task 4: reference implementation
+```{r}
+#| label: p4-samplers
+gibbs_oneway_centered <- function(y, g, n_iter, m0 = 250, s0 = 100, s_tau = 100, a = 2, b = 2 * 50^2, step = 0.5,
+                                  init = NULL) {
+  g <- as.integer(factor(g)); J <- max(g); nj <- tabulate(g, J); ybar <- as.vector(tapply(y, g, mean)); N <- length(y)
+  mu <- if (is.null(init)) mean(y) else init$mu; tau <- if (is.null(init)) sd(ybar) else init$tau
+  s2 <- var(y); theta <- ybar
+  out <- matrix(NA_real_, n_iter, J + 3, dimnames = list(NULL, c("mu", "tau", "sigma", paste0("theta[", 1:J, "]"))))
+  acc <- 0
+  for (t in seq_len(n_iter)) {
+    prec <- nj / s2 + 1 / tau^2
+    theta <- rnorm(J, (nj * ybar / s2 + mu / tau^2) / prec, sqrt(1 / prec))
+    pm <- J / tau^2 + 1 / s0^2
+    mu <- rnorm(1, (sum(theta) / tau^2 + m0 / s0^2) / pm, sqrt(1 / pm))
+    s2 <- 1 / rgamma(1, a + N / 2, b + 0.5 * sum((y - theta[g])^2))
+    S <- sum((theta - mu)^2)
+    lt <- function(l) -(J - 1) * l - S / (2 * exp(2 * l)) - exp(2 * l) / (2 * s_tau^2)   # log tau scale, Jacobian included
+    lp <- log(tau) + step * rnorm(1)
+    if (log(runif(1)) < lt(lp) - lt(log(tau))) { tau <- exp(lp); acc <- acc + 1 }
+    out[t, ] <- c(mu, tau, sqrt(s2), theta)
+  }
+  attr(out, "tau_acceptance") <- acc / n_iter
+  out
+}
+gibbs_oneway_noncentered <- function(y, g, n_iter, m0 = 250, s0 = 100, s_tau = 100, a = 2, b = 2 * 50^2, init = NULL) {
+  g <- as.integer(factor(g)); J <- max(g); nj <- tabulate(g, J); N <- length(y)
+  mu <- if (is.null(init)) mean(y) else init$mu; tau <- if (is.null(init)) sd(tapply(y, g, mean)) else init$tau
+  s2 <- var(y); eta <- rep(0, J)
+  out <- matrix(NA_real_, n_iter, J + 3, dimnames = list(NULL, c("mu", "tau", "sigma", paste0("theta[", 1:J, "]"))))
+  P0 <- diag(c(1 / s0^2, 1 / s_tau^2)); b0 <- c(m0 / s0^2, 0)
+  for (t in seq_len(n_iter)) {
+    r <- as.vector(tapply(y - mu, g, sum))
+    prec <- nj * tau^2 / s2 + 1
+    eta <- rnorm(J, tau * r / s2 / prec, sqrt(1 / prec))
+    Z <- cbind(1, eta[g])
+    Pn <- P0 + crossprod(Z) / s2
+    U <- chol(Pn)
+    mn <- backsolve(U, backsolve(U, b0 + crossprod(Z, y) / s2, transpose = TRUE))
+    ab <- as.vector(mn + backsolve(U, rnorm(2)))
+    mu <- ab[1]; tau <- ab[2]
+    s2 <- 1 / rgamma(1, a + N / 2, b + 0.5 * sum((y - mu - tau * eta[g])^2))
+    out[t, ] <- c(mu, abs(tau), sqrt(s2), mu + tau * eta)
+  }
+  out
+}
+```
+```{r}
+#| label: p4-tests
+library(testthat); local_edition(3)
+test_that("samplers return valid output and recover known parameters", {
+  set.seed(1); g <- rep(1:6, each = 40); th <- c(200, 250, 300, 220, 280, 260); y <- rnorm(length(g), th[g], 30)
+  for (f in list(gibbs_oneway_centered, gibbs_oneway_noncentered)) {
+    out <- f(y, g, 3000)[-(1:500), ]
+    expect_equal(dim(out), c(2500L, 9L))
+    expect_true(all(out[, "sigma"] > 0) && all(out[, "tau"] >= 0))
+    expect_equal(unname(colMeans(out[, 4:9])), th, tolerance = 0.06)
+    expect_equal(mean(out[, "sigma"]), 30, tolerance = 0.1)
+  }
+})
+```
+:::
+
+::: {.callout-tip collapse="true"}
+## Task 5: mixing
+```{r}
+#| label: p4-mixing
+fit4 <- function(f, y, g, ...) lapply(1:4, function(k) f(y, g, 4000, ..., init = list(mu = rnorm(1, 250, 50), tau = exp(rnorm(1, log(40), 0.5))))[-(1:1000), ])
+diag_tab <- function(fits, pars = c("mu", "tau", "sigma"))
+  do.call(rbind, lapply(pars, function(p) summarise_draws_basic(sapply(fits, function(d) d[, p]), p)))[, c("variable", "mean", "sd", "rhat", "ess_bulk", "ess_tail")]
+set.seed(401)
+rbind(cbind(data = "chickwts", sampler = "centred", diag_tab(fit4(gibbs_oneway_centered, chickwts$weight, chickwts$feed))),
+      cbind(data = "chickwts", sampler = "non-centred", diag_tab(fit4(gibbs_oneway_noncentered, chickwts$weight, chickwts$feed))))
+set.seed(402); g_lo <- rep(1:8, each = 2); y_lo <- rnorm(16, rnorm(8, 250, 5)[g_lo], 55)    # synthetic, low information
+rbind(cbind(data = "synthetic", sampler = "centred", diag_tab(fit4(gibbs_oneway_centered, y_lo, g_lo, s_tau = 30))),
+      cbind(data = "synthetic", sampler = "non-centred", diag_tab(fit4(gibbs_oneway_noncentered, y_lo, g_lo, s_tau = 30))))
+```
+On `chickwts` the groups are informative: $\sigma/\sqrt{n_j}\approx16$ g, much smaller than $\tau\approx70$ g. The centred sampler mixes well, and the non-centred sampler has a much smaller ESS for $\mu$, because $\mu$ and $\eta$ are strongly dependent a posteriori when the data pin down each $\theta_j=\mu+\tau\eta_j$. On the low-information synthetic data ($\sigma/\sqrt{n_j}\approx39$ g against $\tau=5$ g) the situation reverses. The centred sampler mixes poorly for $\tau$ (the funnel, @sec-hierarchical), while the non-centred sampler is nearly independent. Neither parameterisation is uniformly better. The choice depends on how informative the data are about each group [@papaspiliopoulos2007general], and `chickwts` is a real example where the centred form is preferable.
+:::
+
+::: {.callout-tip collapse="true"}
+## Task 6: simulation-based calibration
+```{r}
+#| label: p4-sbc
+set.seed(403)
+g_design <- as.integer(chickwts$feed); L <- 99
+ranks <- t(replicate(200, {
+  mu <- rnorm(1, 250, 100); tau <- abs(rnorm(1, 0, 100)); s <- sqrt(1 / rgamma(1, 2, 2 * 50^2))
+  y_sim <- rnorm(length(g_design), rnorm(6, mu, tau)[g_design], s)
+  d <- gibbs_oneway_centered(y_sim, g_design, 1190, init = list(mu = mu, tau = max(tau, 1)))[-(1:200), ][seq(10, 990, by = 10), ]
+  c(mu = sum(d[, "mu"] < mu), tau = sum(d[, "tau"] < tau), sigma = sum(d[, "sigma"] < s))
+}))
+sapply(colnames(ranks), function(p) sbc_uniformity_test(ranks[, p], L)$p_value) |> round(3)
+```
+```{r}
+#| label: fig-p4-sbc
+#| fig-cap: "SBC rank histograms for the centred Gibbs sampler (200 simulated data sets from the prior, chickwts design, 99 thinned draws each)."
+op <- par(mfrow = c(1, 3)); for (p in colnames(ranks)) sbc_plot(ranks[, p], L, n_bins = 10, main = p); par(op)
+```
+The rank histograms are consistent with uniformity, and the uniformity tests give no evidence against calibration (p-values around 0.3–0.6). Starting each simulation at the true values is legitimate in SBC, because once the chain has converged the ranks depend on the stationary distribution, not on the starting point. But it can hide poor convergence from overdispersed starts, so check convergence separately (Task 5). With 200 simulations, SBC can detect only moderately large miscalibration (@sec-validation).
+:::
+
+::: {.callout-tip collapse="true"}
+## Task 7: interpretation
+```{r}
+#| label: p4-interpret
+set.seed(404)
+post <- do.call(rbind, fit4(gibbs_oneway_centered, chickwts$weight, chickwts$feed))
+th <- post[, grep("theta", colnames(post))]; colnames(th) <- levels(chickwts$feed)
+cbind(raw_mean = tapply(chickwts$weight, chickwts$feed, mean), post_mean = colMeans(th),
+      q5 = apply(th, 2, quantile, 0.05), q95 = apply(th, 2, quantile, 0.95)) |> round(1)
+c(p_casein_gt_sunflower = mean(th[, "casein"] > th[, "sunflower"]),
+  best_minus_worst_median = median(apply(th, 1, max) - apply(th, 1, min)))
+```
+Posterior means are shrunk towards the overall mean by amounts that grow with their distance from it and with their uncertainty. The extreme groups move most: horsebean, the lowest group and among the smallest, rises by about 7 g, while casein and sunflower fall by about 4 g. With 10–14 chicks per group the shrinkage is modest. The posterior probability that casein beats sunflower is about 0.4: the data cannot separate the two best feeds. Feed effects are nevertheless large overall, with a median best-minus-worst difference of about 160 g. Because chicks were randomised to feeds, these differences can be interpreted causally for this experiment, though only for this population and setting.
+:::

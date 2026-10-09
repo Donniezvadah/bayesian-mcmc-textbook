@@ -1,0 +1,44 @@
+# Computational Environment {#sec-environment}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+Computational results depend on software versions, random-number generators, numerical libraries and hardware. This appendix records the environment used to build the book, and explains how to reproduce it.
+
+## Dependency strategy {#sec-env-strategy}
+
+The book deliberately has few dependencies:
+
+- **Required to build the book:** R (≥ 4.3), Quarto (≥ 1.4), and the R packages `knitr`, `rmarkdown`, `posterior`, `coda`, `loo`, `ggplot2`, `MASS`, `boot` and `testthat`. All course samplers and diagnostics are written in base R (with `stats`, `graphics`, `grDevices`, `utils` and `parallel`).
+- **Optional, local only:** `cmdstanr` with CmdStan (for the Stan comparisons in `stan/`), and `bayesplot` (for the diagnostic plot shown, but not run, in @sec-diagnostics). The book renders without them.
+- The dependencies are declared in the repository's `DESCRIPTION` file, so `remotes::install_deps()` or `pak::local_install_deps()` installs current versions of them.
+- **Freezing.** Quarto's `freeze: auto` stores computed results in `_freeze/`, which is committed to the repository. A chapter is re-executed only when its source changes. The published site therefore reflects the environment in which each chapter was last executed.
+- **Pinned versions.** The exact versions of every package needed to build the book (71 packages, including dependencies) are recorded in `renv.lock`, and the continuous-integration workflow restores them with `renv::restore()` under pinned versions of R (4.6.1) and Quarto (1.10.18). The project does *not* activate renv, so readers can work with their own package library. Those who want the exact versions can restore them into a library of their choice (see `README.md`).
+
+## Build environment {#sec-env-build}
+
+The table is produced when this appendix is rendered.
+
+```{r}
+#| label: env-report
+environment_report()
+pkgs <- c("knitr", "rmarkdown", "posterior", "coda", "loo", "ggplot2", "MASS", "boot", "testthat")
+data.frame(package = pkgs, version = vapply(pkgs, function(p) as.character(utils::packageVersion(p)), character(1)), row.names = NULL)
+```
+
+The book was last built with Quarto 1.10.18. The Stan reference results in `stan/README.md` were produced with CmdStan 2.39.0 and `cmdstanr` 0.9.0 on 9 October 2026.
+
+## Reproducing results {#sec-env-reproduce}
+
+1. Clone the repository, and install R and Quarto.
+2. Install the dependencies from the repository root, either current versions with `Rscript -e 'install.packages("remotes"); remotes::install_deps(dependencies = TRUE)'`, or the exact recorded versions with `Rscript -e 'install.packages("renv"); renv::restore(lockfile = "renv.lock", library = .libPaths()[1], prompt = FALSE)'`.
+3. Run the tests: `Rscript tests/run-tests.R`.
+4. Render the book: `quarto render`. To force every chapter to be re-executed, delete `_freeze/` first or run `quarto render --cache-refresh`.
+
+Numerical results will agree to within Monte Carlo error across platforms, but not necessarily digit for digit. Different BLAS libraries change the rounding in matrix operations, and R's sampling algorithms have changed between versions (e.g. `sample()` in R 3.6.0). Every narrative statement in the book about a computed number was checked against the rendered output on the build environment above. If you see a materially different result, please report it as described in `CONTRIBUTING.md`.
+
+## Random numbers {#sec-env-rng}
+
+The book uses R's default Mersenne-Twister generator with inversion for normal variates, seeded explicitly in each computational chunk. Parallel chains in `run_chains()` use L'Ecuyer-CMRG streams (@sec-eng-rng). Stan uses its own generator, so Stan results are reproducible only for a given CmdStan version, seed and platform.

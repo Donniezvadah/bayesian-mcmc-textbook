@@ -1,0 +1,443 @@
+# Metropolis–Hastings {#sec-mh}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. derive the Metropolis–Hastings acceptance probability from the detailed balance condition, and prove that the resulting kernel leaves the target invariant, including the rejection atom and support boundaries;
+2. explain why the normalising constant cancels, and when the Hastings correction for asymmetric proposals is needed;
+3. implement random-walk, general and independence Metropolis–Hastings samplers in R, with input validation and log-scale acceptance;
+4. validate an implementation against exact transition matrices and targets with known moments;
+5. tune proposal scales and covariances using optimal-scaling theory, and explain why the acceptance rate is a tuning heuristic and not a convergence diagnostic;
+6. diagnose the main failure modes: poor scaling, strong correlation, heavy tails, multimodality and boundaries.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-markov-chains (detailed balance, convergence, autocorrelation), @sec-why-mcmc (invariance from ratios, limits of finite runs), @sec-math-tools (log-scale arithmetic, Cholesky factors, Laplace approximation).
+:::
+
+## Motivation {#sec-mh-motivation}
+
+The Metropolis algorithm [@metropolis1953equation], generalised by @hastings1970, is the most widely used MCMC method and the foundation for nearly all others. Gibbs sampling, Metropolis-adjusted Langevin, Hamiltonian Monte Carlo, slice sampling and parallel tempering can all be understood as Metropolis–Hastings algorithms with particular proposals. Its central idea is simple: propose a move from any convenient distribution, then accept or reject it with a probability chosen so that the target is invariant. All that is needed is the ability to evaluate the target up to a constant. This chapter derives the algorithm carefully, implements it, and shows how and why it fails.
+
+## Definitions and notation {#sec-mh-definitions}
+
+Let $\pi(\theta)=\tilde\pi(\theta)/Z$ be the target density on $\mathsf X\subseteq\mathbb R^d$, and let $q(\theta'\mid\theta)$ be a **proposal density**: for each current state $\theta$, a density in $\theta'$ that we can sample from and evaluate up to a constant not depending on $\theta$ or $\theta'$.
+
+::: {#def-mh-algorithm}
+## Metropolis–Hastings algorithm
+Given the current state $\theta_t$:
+
+1. propose $\theta'\sim q(\cdot\mid\theta_t)$;
+2. compute the **acceptance probability**
+$$
+\alpha(\theta_t,\theta')=\min\Big\{1,\ \frac{\pi(\theta')\,q(\theta_t\mid\theta')}{\pi(\theta_t)\,q(\theta'\mid\theta_t)}\Big\};
+$$ {#eq-mh-alpha}
+3. with probability $\alpha(\theta_t,\theta')$ set $\theta_{t+1}=\theta'$ (**accept**); otherwise set $\theta_{t+1}=\theta_t$ (**reject**).
+:::
+
+The ratio inside the minimum is the **Hastings ratio** $r(\theta,\theta')$. Because $\pi$ appears in both numerator and denominator, $\pi$ can be replaced by $\tilde\pi$, so the **normalising constant cancels**. When $q$ is symmetric, $q(\theta'\mid\theta)=q(\theta\mid\theta')$, the proposal terms cancel too, leaving the original Metropolis ratio $\tilde\pi(\theta')/\tilde\pi(\theta)$.
+
+Three special cases are important:
+
+- **Random-walk Metropolis (RWM):** $\theta'=\theta+\varepsilon$ with $\varepsilon\sim\mathrm N(0,\Sigma_q)$ or another symmetric distribution;
+- **Independence sampler:** $q(\theta'\mid\theta)=g(\theta')$ does not depend on the current state;
+- **Langevin and Hamiltonian proposals:** proposals guided by $\nabla\log\pi$ (@sec-hmc, @sec-adaptive).
+
+## Mathematical development {#sec-mh-development}
+
+### Deriving the acceptance probability from detailed balance {#sec-mh-derivation}
+
+We look for a kernel of the form "propose from $q$, accept with some probability $\alpha(\theta,\theta')$, otherwise stay" that satisfies detailed balance with respect to $\pi$. For $\theta'\neq\theta$, the probability density of moving from $\theta$ to $\theta'$ is $q(\theta'\mid\theta)\alpha(\theta,\theta')$, so detailed balance (@eq-detailed-balance) for the moves requires
+$$
+\pi(\theta)\,q(\theta'\mid\theta)\,\alpha(\theta,\theta')=\pi(\theta')\,q(\theta\mid\theta')\,\alpha(\theta',\theta)\qquad\text{for all }\theta\neq\theta'.
+$$ {#eq-mh-db-requirement}
+Equivalently, wherever $\pi(\theta)q(\theta'\mid\theta)>0$, the acceptance probabilities must satisfy $\alpha(\theta,\theta')/\alpha(\theta',\theta)=r(\theta,\theta')$. Many functions satisfy this. Since rejections waste proposals, we want $\alpha$ as large as possible subject to $\alpha\le1$. If $r(\theta,\theta')\ge1$, we can take $\alpha(\theta,\theta')=1$ and $\alpha(\theta',\theta)=1/r(\theta,\theta')=r(\theta',\theta)$. If $r<1$, we take $\alpha(\theta,\theta')=r$ and $\alpha(\theta',\theta)=1$. Both cases are $\alpha=\min(1,r)$, which is @eq-mh-alpha. Any other valid choice is pointwise smaller. For instance, Barker's rule $\alpha=r/(1+r)$ also satisfies @eq-mh-db-requirement but accepts less often, and @peskun1973optimum showed that, for a given proposal, larger off-diagonal transition probabilities never increase the asymptotic variance of ergodic averages. Metropolis–Hastings is in this sense the optimal acceptance rule.
+
+### Invariance, including the rejection atom {#sec-mh-invariance}
+
+The rejection step means that the MH kernel has an *atom* at the current state. Its full form is
+$$
+P(\theta,d\theta')=q(\theta'\mid\theta)\,\alpha(\theta,\theta')\,d\theta'+\rho(\theta)\,\delta_\theta(d\theta'),\qquad\rho(\theta)=1-\int q(u\mid\theta)\,\alpha(\theta,u)\,du,
+$$ {#eq-mh-kernel}
+where $\rho(\theta)$ is the total probability of rejecting.
+
+::: {#thm-mh-invariance}
+## Metropolis–Hastings leaves the target invariant
+Let $\pi$ and $q(\cdot\mid\theta)$ be densities with respect to Lebesgue measure on $\mathsf X$, and define $\alpha$ by @eq-mh-alpha wherever $\pi(\theta)q(\theta'\mid\theta)>0$, and $\alpha(\theta,\theta')=1$ otherwise. Then the kernel @eq-mh-kernel satisfies detailed balance with respect to $\pi$ and, in particular, $\pi P=\pi$.
+:::
+
+::: {.proof}
+We must show that for all measurable $A,B$,
+$\int_A\pi(\theta)P(\theta,B)\,d\theta=\int_B\pi(\theta')P(\theta',A)\,d\theta'$.
+Split $P$ into its continuous part and its atom.
+
+*Continuous part.* Define $m(\theta,\theta')=\pi(\theta)q(\theta'\mid\theta)\alpha(\theta,\theta')$. If $\pi(\theta)q(\theta'\mid\theta)>0$ and $\pi(\theta')q(\theta\mid\theta')>0$, then $m(\theta,\theta')=\min\{\pi(\theta)q(\theta'\mid\theta),\ \pi(\theta')q(\theta\mid\theta')\}$, which is symmetric in $(\theta,\theta')$. If $\pi(\theta)q(\theta'\mid\theta)=0$, then $m(\theta,\theta')=0$; and $m(\theta',\theta)=\pi(\theta')q(\theta\mid\theta')\min\{1,\pi(\theta)q(\theta'\mid\theta)/(\pi(\theta')q(\theta\mid\theta'))\}=0$ too (or is zero directly). So $m$ is symmetric everywhere, and
+$\int_A\int_Bm(\theta,\theta')\,d\theta'\,d\theta=\int_B\int_Am(\theta',\theta)\,d\theta\,d\theta'$ by Fubini's theorem.
+
+*Atom.* $\int_A\pi(\theta)\rho(\theta)\delta_\theta(B)\,d\theta=\int_{A\cap B}\pi(\theta)\rho(\theta)\,d\theta$, which is symmetric in $A$ and $B$.
+
+Adding the two parts gives detailed balance, and @prp-db-invariance gives invariance.
+:::
+
+Three consequences matter in practice.
+
+1. **Support boundaries.** If the target is zero outside a set $\mathsf S$ (for example $\sigma>0$), proposals outside $\mathsf S$ have $\pi(\theta')=0$, hence $\alpha=0$, and are rejected. The theorem covers this case: the chain stays in $\mathsf S$ and remains $\pi$-invariant. Proposals near the boundary are wasted, though, so it is often better to sample $\log\sigma$ with the Jacobian included (@sec-prob-transformations).
+2. **Asymmetric proposals need the Hastings correction.** Omitting $q(\theta\mid\theta')/q(\theta'\mid\theta)$ when $q$ is asymmetric gives a chain that is reversible with respect to a *different* distribution (@exr-mh-3). The test `"an asymmetric proposal needs the Hastings correction"` in `tests/testthat/test-metropolis.R` demonstrates this.
+3. **Densities need a common reference measure.** The ratio @eq-mh-alpha compares densities. If the proposal sometimes jumps between spaces of different dimension, or places point masses, then $\pi$ and $q$ must be densities with respect to the same measure, and the ratio must be computed accordingly [@tierney1998note; @green1995reversible]. This is the origin of the Jacobian terms in reversible-jump MCMC.
+
+### Irreducibility, aperiodicity and convergence {#sec-mh-convergence}
+
+Invariance is not enough (@sec-markov-chains). Sufficient conditions are easy to state for RWM: if $\pi$ is positive and continuous on an open connected set, and the proposal density $q(\theta'\mid\theta)$ is positive for all $\theta'$ within some fixed distance of $\theta$, then the chain is $\pi$-irreducible and aperiodic, and @thm-tierney applies [@roberts2004general, Section 3; @mengersen1996rates]. A Gaussian random walk satisfies this for any target with a connected, open support.
+
+**Rates are more delicate.** For RWM on $\mathbb R$, geometric ergodicity essentially requires the target to have *exponentially light tails*. For heavy-tailed targets such as the Student $t$, RWM is not geometrically ergodic [@mengersen1996rates; @jarner2000geometric], and the CLT and MCSEs may fail (@thm-markov-clt). In $d$ dimensions, conditions on the curvature of the target's contours are needed as well [@roberts1996geometric]. The **independence sampler** is *uniformly* ergodic if and only if the importance weight $w(\theta)=\pi(\theta)/g(\theta)$ is bounded, in which case $\lVert P^n(\theta,\cdot)-\pi\rVert_{\mathrm{TV}}\le(1-1/\sup w)^n$, and otherwise it is not even geometrically ergodic [@mengersen1996rates]. A proposal with lighter tails than the target is dangerous: the chain can get stuck for very long periods in the tails, where $w$ is huge.
+
+### Log-scale computation {#sec-mh-log-scale}
+
+The ratio @eq-mh-alpha must be computed on the log scale:
+$$
+\log r(\theta,\theta')=\log\tilde\pi(\theta')-\log\tilde\pi(\theta)+\log q(\theta\mid\theta')-\log q(\theta'\mid\theta),
+$$
+and the proposal is accepted if $\log U<\log r$ for $U\sim\mathrm U(0,1)$. Since $\log U\le0$, comparing with $\log r$ is equivalent to comparing with $\min(0,\log r)$, and no exponentiation is needed. A proposal outside the support gives $\log\tilde\pi(\theta')=-\infty$, hence $\log r=-\infty$, and is always rejected. Evaluating densities directly would underflow for any realistic data set (@sec-math-logscale).
+
+### Proposal scale and optimal scaling {#sec-mh-scaling}
+
+For RWM with proposal standard deviation $s$, two failure modes bracket the useful range:
+
+- **$s$ too small**: almost every proposal is accepted, but each move is tiny, so the chain diffuses slowly and successive states are highly correlated;
+- **$s$ too large**: proposals land in low-density regions and are almost all rejected, so the chain stays put for long stretches.
+
+Both extremes give large integrated autocorrelation times. For a sequence of targets of the product form $\pi_d(\theta)=\prod_{i=1}^df(\theta_i)$ with smooth $f$, and RWM proposals $\mathrm N(0,\ell^2/d\cdot I_d)$, @roberts1997weak proved that as $d\to\infty$ each coordinate of the sped-up chain converges to a Langevin diffusion whose speed is maximised when the asymptotic acceptance rate is
+$$
+a^\ast\approx0.234,\quad\text{attained at }\ell^\ast\approx2.38/\sqrt{I},\quad I=\mathbb E_f\big[(\log f)'(\theta)^2\big].
+$$
+For standard normal components $I=1$, so the optimal proposal standard deviation is $2.38/\sqrt d$ per coordinate. For a Gaussian target with covariance $\Sigma$, the corresponding recommendation is the proposal covariance $(2.38^2/d)\,\Sigma$ [@roberts2001optimal]. In low dimensions the optimal acceptance rate is higher, about $0.44$ in one dimension for a Gaussian target [@roberts2001optimal; @rosenthal2011optimal]. Efficiency degrades only slowly near the optimum: acceptance rates anywhere between roughly $0.15$ and $0.5$ lose little [@sherlock2010random].
+
+::: {.callout-important}
+## The acceptance rate is not a convergence diagnostic
+An acceptance rate of 0.234 says nothing about whether the chain has explored the posterior. The bimodal chain of @sec-why-worked had an excellent acceptance rate while missing 30% of the mass. Use the acceptance rate to *tune* the proposal, and use multiple chains, $\widehat R$, ESS and validation (Part V) to *assess* the output.
+:::
+
+**Multivariate proposals.** When the posterior is correlated or has very different scales in different directions, an isotropic proposal must be small enough for the narrowest direction, and the chain then crawls along the widest one. Matching the proposal covariance to the posterior covariance, estimated from a pilot run or from the Laplace approximation, removes this mismatch. This is the motivation for adaptive Metropolis (@sec-adaptive). Even with the ideal covariance, the effective sample size per iteration of RWM decreases like $1/d$, which is why gradient-based methods dominate in high dimensions (@sec-hmc).
+
+## Worked example: the bioassay posterior {#sec-mh-worked}
+
+We return to the dose–response model of @sec-math-worked, $\operatorname{logit}\mathbb P(\text{death})=\alpha+\beta x$ with $\mathrm N(0,10^2)$ priors, for which we have an accurate grid answer. The aim is to estimate the posterior means of $\alpha$ and $\beta$ and of the LD50 $=-\alpha/\beta$, the dose that kills half the animals.
+
+**Step 1: the target and a proposal covariance.** The log posterior comes from `logistic_regression_model()`. For the proposal we use the Laplace approximation's covariance, scaled by $2.38^2/d$ with $d=2$.
+
+```{r}
+#| label: mh-bioassay-setup
+dose <- c(-0.86, -0.30, -0.05, 0.73); deaths <- c(0, 1, 3, 5)
+X <- cbind(1, rep(dose, each = 5))
+y <- unlist(lapply(deaths, function(k) c(rep(1, k), rep(0, 5 - k))))
+model <- logistic_regression_model(X, y, prior_sd = 10)
+hess <- function(b) { p <- inv_logit(as.vector(X %*% b)); -crossprod(X * (p * (1 - p)), X) - diag(1 / 100, 2) }
+la <- laplace_approximation(model$log_density, model$grad, hess, c(0, 0))
+prop_cov <- 2.38^2 / 2 * la$cov
+round(prop_cov, 3)
+```
+
+**Step 2: four chains from dispersed starting points.** Starting points are drawn from the Laplace approximation with its covariance inflated by a factor of 9, so that they are more dispersed than the posterior.
+
+```{r}
+#| label: mh-bioassay-run
+set.seed(1201)
+starts <- rmvnorm_chol(4, la$mode, 9 * la$cov)
+runs <- lapply(seq_len(4), function(k) rw_metropolis(model$log_density, starts[k, ], 6000, prop_cov))
+sapply(runs, `[[`, "acceptance_rate")
+keep <- 1001:6000                                    # discard the first 1000 iterations as warm-up
+alpha_draws <- sapply(runs, function(r) r$draws[keep, 1])
+beta_draws <- sapply(runs, function(r) r$draws[keep, 2])
+ld50_draws <- -alpha_draws / beta_draws
+summ <- rbind(summarise_draws_basic(alpha_draws, "alpha"),
+              summarise_draws_basic(beta_draws, "beta"),
+              summarise_draws_basic(ld50_draws, "LD50"))
+summ[, -1] <- signif(summ[, -1], 4); summ
+```
+
+```{r}
+#| label: fig-mh-bioassay-traces
+#| fig-cap: "Trace plots of four random-walk Metropolis chains for the bioassay slope $\\beta$ (left), after warm-up, and the joint draws of $(\\alpha,\\beta)$ from all chains over the grid posterior's contours (right)."
+#| fig-height: 3.6
+par(mfrow = c(1, 2))
+trace_plot(beta_draws, ylab = expression(beta))
+plot(alpha_draws, beta_draws, pch = 16, cex = 0.25, col = alpha_col(course_cols[["blue"]], 0.25),
+     xlab = expression(alpha), ylab = expression(beta), xlim = c(-2, 4), ylim = c(-2, 30))
+a_grid <- seq(-2, 4, length.out = 201); b_grid <- seq(-2, 30, length.out = 201)
+lp_grid <- outer(a_grid, b_grid, Vectorize(function(a, b) model$log_density(c(a, b))))
+contour(a_grid, b_grid, exp(lp_grid - max(lp_grid)), add = TRUE, drawlabels = FALSE, nlevels = 6,
+        col = course_cols[["orange"]])
+```
+
+**Step 3: validate against the grid answer.** The grid integration of @sec-math-worked gave posterior means of about $0.956$ for $\alpha$ and $8.89$ for $\beta$. We compare in units of MCSE:
+
+```{r}
+#| label: mh-bioassay-validate
+h <- diff(a_grid[1:2]) * diff(b_grid[1:2])
+a_fine <- seq(-4, 8, length.out = 401); b_fine <- seq(-10, 45, length.out = 601)
+lp_fine <- outer(a_fine, b_fine, Vectorize(function(a, b) model$log_density(c(a, b))))
+w <- exp(lp_fine - max(lp_fine)); w <- w / sum(w)
+grid_mean <- c(alpha = sum(w * a_fine), beta = sum(t(w) * b_fine))
+z <- (c(mean(alpha_draws), mean(beta_draws)) - grid_mean) / c(mcse_mean(alpha_draws), mcse_mean(beta_draws))
+rbind(grid_mean = grid_mean, mcmc_mean = c(mean(alpha_draws), mean(beta_draws)), z_score = z)
+```
+
+The MCMC estimates agree with the grid to within one Monte Carlo standard error. $\widehat R$ is close to 1, and the bulk ESS is about 2000–3000 from 20 000 retained draws. The chains are autocorrelated, so each draw is worth roughly a seventh to a tenth of an independent one, as expected for random-walk proposals.
+
+**Interpretation.** The LD50 is estimated at about $-0.1$ log g/ml, with a 90% interval of roughly $(-0.26,0.08)$. The posterior of $\beta$ is right-skewed: the data rule out a flat dose–response but cannot pin down how steep it is.
+
+## R implementation {#sec-mh-r}
+
+The univariate sampler extends the example in the brief for this course. Compared with that sketch, it treats `NaN` and `NA` log densities as zero density (rejection) rather than failing on comparisons. It stops with an error if the target returns $+\infty$, which signals a bug. It validates `n_iter` as a whole number. It records the log density along the chain for diagnostics. And it drops the redundant `min(0, log_alpha)`, since $\log U\le0$ already.
+
+```{r}
+#| file: R/samplers/metropolis-hastings.R
+```
+
+**Inputs and outputs.** Each function takes the log target (up to an additive constant), an initial value with finite log density, the number of iterations and the proposal settings, and returns the draws and the acceptance rate. **Complexity:** one target evaluation per iteration plus $O(d^2)$ for multivariate proposals. Memory is $O(Nd)$ for storing draws.
+
+**Behaviour at the boundary of the support** is illustrated by the Gamma target, whose log density is $-\infty$ for $\theta\le0$:
+
+```{r}
+#| label: mh-boundary
+tg <- target_gamma(shape = 2, rate = 1)
+set.seed(1202)
+out <- metropolis_hastings(tg$log_density, initial = 0.5, n_iter = 20000, proposal_sd = 2)
+c(min_draw = min(out$draws), acceptance = out$acceptance_rate,
+  mean = mean(out$draws), exact_mean = 2, mcse = mcse_mean(out$draws))
+```
+
+No draw ever leaves the support, and the mean agrees with the exact value within its MCSE.
+
+**Input validation**, checked by `tests/testthat/test-metropolis.R`:
+
+```{r}
+#| label: mh-validation-errors
+#| error: true
+metropolis_hastings(tg$log_density, initial = -1, n_iter = 100, proposal_sd = 1)   # outside support
+metropolis_hastings(tg$log_density, initial = 1, n_iter = 10.5, proposal_sd = 1)   # bad n_iter
+metropolis_hastings(tg$log_density, initial = 1, n_iter = 100, proposal_sd = 0)    # bad scale
+```
+
+**Exact verification on a finite space.** `mh_transition_matrix()` builds the exact MH kernel for a discrete target and an arbitrary (asymmetric) proposal matrix, so @thm-mh-invariance can be checked to machine precision:
+
+```{r}
+#| label: mh-exact-check
+pi_u <- c(1, 4, 2, 0.5, 3)                         # unnormalised target
+Q <- matrix(0, 5, 5)
+for (i in 1:5) { Q[i, i %% 5 + 1] <- 0.7; Q[i, (i - 2) %% 5 + 1] <- 0.3 }   # asymmetric cyclic proposal
+P <- mh_transition_matrix(pi_u, Q)
+pi_n <- pi_u / sum(pi_u)
+is_reversible(P, pi_n)                       # detailed balance holds
+max(abs(pi_n %*% P - pi_n))                  # invariance error: machine precision
+```
+
+## Computational experiment {#sec-mh-experiment}
+
+**Proposal scale in one dimension.** For a $\mathrm N(0,1)$ target, we record the acceptance rate and the integrated autocorrelation time of RWM over a range of proposal standard deviations.
+
+```{r}
+#| label: fig-mh-scale
+#| fig-cap: "Random-walk Metropolis on $\\mathrm N(0,1)$: acceptance rate (left) and effective sample size per 1000 iterations for estimating the mean (right) as functions of the proposal standard deviation (log scale). Efficiency peaks near $s\\approx2.4$, where about 44% of proposals are accepted; both very small and very large proposals are inefficient."
+#| fig-height: 3.4
+set.seed(1203)
+scales <- 10^seq(-1, 1.5, length.out = 15)
+res <- t(sapply(scales, function(s) {
+  d <- metropolis_hastings(function(x) -x^2 / 2, 0, 40000, s)
+  c(s = s, acc = d$acceptance_rate, ess_per_1000 = 1000 / iat(d$draws))
+}))
+par(mfrow = c(1, 2))
+plot(res[, "s"], res[, "acc"], log = "x", type = "b", pch = 16, col = course_cols[["blue"]],
+     xlab = "proposal sd s", ylab = "acceptance rate")
+abline(h = 0.44, lty = 2, col = course_muted)
+plot(res[, "s"], res[, "ess_per_1000"], log = "x", type = "b", pch = 16, col = course_cols[["orange"]],
+     xlab = "proposal sd s", ylab = "ESS per 1000 iterations")
+abline(v = 2.4, lty = 2, col = course_muted)
+```
+
+**Dimension.** For isotropic Gaussian targets in $d$ dimensions with the optimally scaled proposal $s=2.38/\sqrt d$, the acceptance rate approaches 0.234 and the efficiency per iteration falls roughly like $1/d$:
+
+```{r}
+#| label: mh-dimension
+set.seed(1204)
+dims <- c(1, 2, 5, 10, 20, 50)
+dim_res <- t(sapply(dims, function(d) {
+  out <- rw_metropolis(function(x) -sum(x^2) / 2, rep(0, d), 20000, proposal_cov = 2.38 / sqrt(d))
+  c(d = d, acceptance = out$acceptance_rate, ess_per_1000_coord1 = 1000 / iat(out$draws[-(1:2000), 1]))
+}))
+cbind(round(dim_res, 3), d_times_ess = round(dim_res[, "d"] * dim_res[, "ess_per_1000_coord1"]))
+```
+
+The product $d\times\mathrm{ESS}$ stays within a narrow range (roughly 280–390) for $d\ge5$ while $d$ grows tenfold, which confirms the $O(1/d)$ efficiency predicted by the diffusion limit [@roberts1997weak]. For $d=1$ and $d=2$ the asymptotic theory does not apply and the acceptance rate is higher.
+
+**Correlation.** For a bivariate Gaussian with correlation $\rho=0.99$, an isotropic proposal tuned for the narrow direction mixes very slowly along the long one. A proposal matched to the target covariance removes the problem:
+
+```{r}
+#| label: mh-correlation
+tg2 <- target_correlated_gaussian(0.99)
+set.seed(1205)
+iso <- rw_metropolis(tg2$log_density, c(0, 0), 20000, proposal_cov = 0.2)
+matched <- rw_metropolis(tg2$log_density, c(0, 0), 20000, proposal_cov = 2.38^2 / 2 * tg2$cov)
+rbind(isotropic = c(acc = iso$acceptance_rate, ess_x1 = ess_bulk(iso$draws[-(1:2000), 1])),
+      matched = c(acc = matched$acceptance_rate, ess_x1 = ess_bulk(matched$draws[-(1:2000), 1])))
+```
+
+**Independence samplers and tails.** For a $t_3$ target, an independence sampler with a *normal* proposal has unbounded weights $\pi/g$ and gets stuck in the tails, while a Cauchy proposal has bounded weights and is uniformly ergodic:
+
+```{r}
+#| label: fig-mh-independence
+#| fig-cap: "Independence samplers for a $t_3$ target. With a $\\mathrm N(0,1)$ proposal (left) the chain sticks for long periods after visiting the tails, because the importance weight $\\pi/g$ is unbounded; with a Cauchy proposal (right) it moves freely."
+#| fig-height: 3.2
+lt3 <- function(x) dt(x, 3, log = TRUE)
+set.seed(1206)
+ind_norm <- independence_sampler(lt3, 0, 10000, function(n) rnorm(n), function(x) dnorm(x, log = TRUE))
+ind_cauchy <- independence_sampler(lt3, 0, 10000, function(n) rcauchy(n), function(x) dcauchy(x, log = TRUE))
+par(mfrow = c(1, 2))
+trace_plot(ind_norm$draws, ylab = "theta", main = "normal proposal")
+trace_plot(ind_cauchy$draws, ylab = "theta", main = "Cauchy proposal")
+```
+
+```{r}
+#| label: mh-independence-summary
+c(var_normal_proposal = var(ind_norm$draws), var_cauchy_proposal = var(ind_cauchy$draws), exact_var = 3)
+```
+
+The normal-proposal chain underestimates the variance of the target badly, because it rarely proposes the tail values that carry much of the variance, and when it does reach the tails it stays there.
+
+## Diagnostics and validation {#sec-mh-validation}
+
+The implementation was validated at four levels, each of which you should apply to any new sampler:
+
+1. **Exact invariance** on finite spaces via `mh_transition_matrix()` (detailed balance to machine precision).
+2. **Known continuous targets**: moments of $\mathrm N(3,2^2)$, $\mathrm{Gamma}(2,1)$, correlated Gaussians and an exponential target with an asymmetric proposal, each compared with the truth in units of MCSE, with multiple chains and $\widehat R$ (`tests/testthat/test-metropolis.R`).
+3. **Input and edge-case handling**: invalid inputs, initial values outside the support, NaN-producing targets and targets returning $+\infty$.
+4. **A real posterior against an independent computation**: the bioassay grid comparison above.
+
+For applied work, add the diagnostics of Part V (multiple chains, rank-normalised $\widehat R$, bulk and tail ESS, MCSE) and simulation-based calibration of the whole pipeline (@sec-validation).
+
+## Interpretation {#sec-mh-interpretation}
+
+Metropolis–Hastings converts the problem "sample from $\pi$" into the problem "find a proposal that moves well". The algorithm is always correct (given invariance and irreducibility), and its efficiency depends entirely on how well the proposal matches the geometry of the target: its scale, its correlations, its tails and its modes. Random-walk proposals are robust and simple. Their cost grows linearly with dimension and sharply with ill-conditioning, which motivates the gradient-based methods of @sec-hmc and @sec-adaptive.
+
+## Limitations and common errors {#sec-mh-errors}
+
+- **Omitting the Hastings correction** for asymmetric proposals (log-normal or multiplicative random walks, proposals truncated to the support).
+- **Forgetting the Jacobian** when sampling a transformed parameter. The chain then targets the wrong distribution.
+- **Treating rejections as "no output"**: when a proposal is rejected, the current state must be recorded again. Dropping repeated values biases the output.
+- **Tuning by acceptance rate alone**, or reading the acceptance rate as evidence of convergence.
+- **Adapting the proposal using the chain's own history during sampling** without the safeguards of @sec-adaptive.
+- **Using light-tailed independence proposals** for heavy-tailed targets.
+- **Evaluating densities on the natural scale**, which causes underflow and acceptance probabilities of $0/0$.
+- **Isotropic proposals for correlated posteriors.** Reparameterise or use a covariance-matched proposal.
+
+## Chapter summary {#sec-mh-summary}
+
+- The Metropolis–Hastings acceptance probability $\min\{1,\pi(\theta')q(\theta\mid\theta')/(\pi(\theta)q(\theta'\mid\theta))\}$ is the largest acceptance function satisfying detailed balance. The normalising constant of $\pi$ cancels.
+- The MH kernel, including its rejection atom, is $\pi$-reversible (@thm-mh-invariance). Proposals outside the support are rejected automatically.
+- Asymmetric proposals need the Hastings correction, and densities must share a reference measure.
+- Random-walk Metropolis is $\pi$-irreducible and aperiodic under mild conditions, but geometric ergodicity requires light tails. Independence samplers need bounded importance weights.
+- Optimal scaling suggests acceptance rates near 0.234 in high dimensions (0.44 in one dimension) and proposal covariance $(2.38^2/d)\Sigma$. Efficiency per iteration falls like $1/d$.
+- The acceptance rate is a tuning heuristic, not a diagnostic of convergence.
+
+## Exercises {#sec-mh-exercises}
+
+::: {#exr-mh-1}
+**[Proof ★]** Show that Barker's acceptance function $\alpha_B=r/(1+r)$ also satisfies detailed balance, and that $\alpha_B\le\alpha_{MH}$ pointwise.
+:::
+
+::: {#exr-mh-2}
+**[Mathematical ★★]** For RWM with proposal $\theta'=\theta+\varepsilon$, $\varepsilon\sim\mathrm U(-s,s)$, on the target $\mathrm{Exp}(1)$, compute the rejection probability $\rho(\theta)$ for $\theta>s$ and for $0<\theta<s$.
+:::
+
+::: {#exr-mh-3}
+**[Proof ★★]** Let $q$ be asymmetric and suppose the Hastings correction is omitted, so that $\alpha=\min\{1,\pi(\theta')/\pi(\theta)\}$. Show that if $q(\theta'\mid\theta)h(\theta)=q(\theta\mid\theta')h(\theta')$ for some positive function $h$, the resulting chain is reversible with respect to $\pi(\theta)h(\theta)$ (when this is integrable). Apply this to the multiplicative random walk of the test file.
+:::
+
+::: {#exr-mh-4}
+**[R ★★]** Implement a random-walk Metropolis sampler for the standard deviation $\sigma$ of the sleep-data differences (@sec-conj-sleep), with $\mu$ fixed at its posterior mean, (a) on the $\sigma$ scale with proposals outside $(0,\infty)$ rejected, and (b) on the $\log\sigma$ scale with the Jacobian. Compare acceptance rates and ESS per second, and verify both against the exact conditional posterior.
+:::
+
+::: {#exr-mh-5}
+**[Simulation ★★]** Reproduce the dimension experiment for a target with *heterogeneous* scales, $\mathrm N(0,\operatorname{diag}(1,\dots,1,100))$, using the isotropic proposal $2.38/\sqrt d$. Explain the result, then fix it.
+:::
+
+::: {#exr-mh-6}
+**[Diagnostics ★★]** Run RWM on $t_1$ (Cauchy) with proposal sd 2 for $10^5$ iterations. Plot the running median and the running mean. Which converges? Compute bulk-ESS and tail-ESS. Explain why an MCSE for the mean is meaningless here.
+:::
+
+::: {#exr-mh-7}
+**[Mathematical ★★★]** For the independence sampler with $\sup_\theta\pi(\theta)/g(\theta)=W<\infty$, prove that $P(\theta,A)\ge\pi(A)/W$ for every $\theta$ and $A$, and deduce $\lVert P^n(\theta,\cdot)-\pi\rVert_{\mathrm{TV}}\le(1-1/W)^n$, following the argument of @thm-finite-convergence.
+:::
+
+::: {#exr-mh-8}
+**[Critique ★★]** A software package reports "acceptance rate 0.23 (optimal), sampling successful" for a 3-parameter model. Discuss what this message does and does not establish, and what the user should check.
+:::
+
+::: {#exr-mh-9}
+**[Research ★★★]** The optimal-scaling result of @roberts1997weak assumes product targets. Read @sherlock2010random and investigate empirically how the optimal acceptance rate changes for (a) a correlated Gaussian with an isotropic proposal, and (b) a heavy-tailed product target. Report ESS per iteration against acceptance rate.
+:::
+
+## Further reading {#sec-mh-reading}
+
+- @metropolis1953equation and @hastings1970: the original papers.
+- @chib1995understanding and @billera2001geometric: accessible derivations and a geometric interpretation of the acceptance rule.
+- @tierney1994markov and @tierney1998note: general-state-space theory of Metropolis–Hastings kernels, including the role of the reference measure.
+- @roberts1997weak, @roberts2001optimal, @rosenthal2011optimal and @sherlock2010random: optimal scaling and practical tuning.
+- @mengersen1996rates, @roberts1996geometric and @jarner2000geometric: convergence rates of Metropolis algorithms.
+- @dunson2020hastings: a retrospective on fifty years of the Hastings algorithm.
+
+## Solutions {#sec-mh-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mh-1
+With $r=r(\theta,\theta')$ and $r(\theta',\theta)=1/r$: $\alpha_B(\theta,\theta')/\alpha_B(\theta',\theta)=\frac{r/(1+r)}{(1/r)/(1+1/r)}=\frac{r/(1+r)}{1/(1+r)}=r$, so @eq-mh-db-requirement holds. For $r\ge1$, $\alpha_B=r/(1+r)<1=\alpha_{MH}$; for $r<1$, $\alpha_B=r/(1+r)<r=\alpha_{MH}$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mh-2
+For $\theta>s$, every proposal is in the support. Proposals with $\varepsilon\le0$ have $r\ge1$ and are accepted. Proposals with $\varepsilon>0$ are accepted with probability $e^{-\varepsilon}$. So $\rho(\theta)=\frac1{2s}\int_0^s(1-e^{-\varepsilon})\,d\varepsilon=\frac12-\frac{1-e^{-s}}{2s}$. For $0<\theta<s$, proposals with $\varepsilon<-\theta$ fall outside the support and are rejected, adding $\frac{s-\theta}{2s}$: $\rho(\theta)=\frac{s-\theta}{2s}+\frac12-\frac{1-e^{-s}}{2s}$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mh-3
+The move density is $m(\theta,\theta')=\pi(\theta)h(\theta)q(\theta'\mid\theta)\min\{1,\pi(\theta')/\pi(\theta)\}=h(\theta)q(\theta'\mid\theta)\min\{\pi(\theta),\pi(\theta')\}$ for the target $\pi h$. Using $h(\theta)q(\theta'\mid\theta)=h(\theta')q(\theta\mid\theta')$, this is symmetric in $(\theta,\theta')$, so the chain is $\pi h$-reversible. For the multiplicative walk $\theta'=\theta e^{s Z}$, $q(\theta'\mid\theta)=\frac{1}{\theta's}\phi(\log(\theta'/\theta)/s)$, so $q(\theta'\mid\theta)\theta'=q(\theta\mid\theta')\theta$ and $h(\theta)=1/\theta$. The incorrect chain targets $\pi(\theta)/\theta$, which for the exponential target is not integrable at 0.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mh-4
+Conditional on $\mu$, the posterior of $\sigma^2$ is $\mathrm{InvGamma}(a_0+\frac n2+\frac12,\ b_0+\frac12\sum(y_i-\mu)^2+\frac{k_0}2(\mu-m_0)^2)$ under the NIG prior (the extra $\frac12$ and $k_0$ term come from the prior on $\mu\mid\sigma^2$). (a) On the $\sigma$ scale use `metropolis_hastings()` with `log_target` returning `-Inf` for $\sigma\le0$. (b) On $\eta=\log\sigma$, the target is $\log\pi_\sigma(e^\eta)+\eta$. Version (b) typically has a higher ESS per iteration because the posterior is more symmetric on the log scale. Both match the exact inverse-gamma quantiles (after transforming $\sigma^2$ to $\sigma$) within MCSE.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mh-5
+With one coordinate of scale 10, an isotropic proposal of size $2.38/\sqrt d$ is far too small for that coordinate. The chain explores it extremely slowly, and its ESS collapses, while the other coordinates look fine. Use the proposal covariance $(2.38^2/d)\Sigma$, or rescale the parameter. This is the multivariate version of the correlation experiment.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mh-6
+The running median settles near 0. The running mean never settles, because the Cauchy distribution has no mean. Bulk-ESS (rank-based) is reasonable, while tail-ESS is much smaller. RWM on the Cauchy target is not geometrically ergodic, and $\mathbb E\lvert\theta\rvert=\infty$, so neither the LLN for $f(\theta)=\theta$ nor a CLT applies. Any reported MCSE for the mean is a number without meaning. Quantiles are the appropriate summaries.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mh-7
+$P(\theta,A)\ge\int_Ag(\theta')\alpha(\theta,\theta')\,d\theta'$ and $\alpha(\theta,\theta')=\min\{1,w(\theta')/w(\theta)\}\ge w(\theta')/W$ (since $w(\theta)\le W$ and $w(\theta')/W\le1$). Hence $P(\theta,A)\ge\int_Ag(\theta')w(\theta')/W\,d\theta'=\pi(A)/W$: a minorisation with $m=1$ and $\epsilon=1/W$. The contraction argument of @thm-finite-convergence (Steps 2–4) then applies verbatim with sums replaced by integrals.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mh-8
+The message establishes only that the proposal scale is in a reasonable range. In three dimensions the optimal acceptance rate is above 0.234, and the asymptotic theory is for large $d$. It says nothing about convergence, multimodality, correlations or effective sample size. The user should run multiple dispersed chains, check rank-normalised $\widehat R$, bulk- and tail-ESS and MCSEs for all quantities of interest, look at trace and pairs plots, and validate the model and sampler on simulated data.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mh-9
+For a correlated Gaussian with an isotropic proposal, efficiency is limited by the narrowest direction. The ESS-maximising acceptance rate is still in the 0.2–0.3 range, but the achievable ESS is far lower than with a matched proposal. For heavy-tailed products the optimal acceptance rate can differ substantially from 0.234 and the efficiency curve is flatter or more irregular [@sherlock2010random]. The rule of thumb is a starting point, not a law.
+:::

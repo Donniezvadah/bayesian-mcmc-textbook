@@ -1,0 +1,455 @@
+# Markov Chains and Stochastic Processes {#sec-markov-chains}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. define a Markov chain on finite and general state spaces through its transition matrix or kernel, and compute $n$-step transitions;
+2. define irreducibility, periodicity, recurrence and transience, and decide which hold for a given chain;
+3. define stationary distributions and detailed balance, and prove that detailed balance implies stationarity;
+4. prove geometric convergence in total variation for finite irreducible aperiodic chains;
+5. derive the variance of an average along a stationary chain in terms of autocorrelations, and define the integrated autocorrelation time;
+6. state precisely which conditions guarantee a law of large numbers, convergence in distribution and a central limit theorem, distinguishing necessary, sufficient and merely convenient conditions.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-probability (conditional distributions), @sec-math-tools (eigenvalues, matrix algebra), @sec-monte-carlo (Monte Carlo estimators and their variance).
+:::
+
+## Motivation {#sec-mc-chains-motivation}
+
+@sec-monte-carlo showed that averages of independent draws estimate posterior expectations with error $O(N^{-1/2})$ in any dimension, but that independent draws from a complicated posterior are usually unobtainable. Markov chain Monte Carlo instead generates a *dependent* sequence $\theta_0,\theta_1,\dots$ in which each state is drawn from a distribution that depends only on the previous one. If the chain is constructed so that its long-run behaviour is governed by the posterior, then averages along the chain still estimate posterior expectations. This chapter supplies the theory needed to make "long-run behaviour" precise: invariance, convergence and the effect of dependence on Monte Carlo error. We prove the main results for finite state spaces, where the ideas are transparent, and state their general-state-space analogues with references. @sec-mcmc-theory returns to the general theory.
+
+## Definitions and notation {#sec-chains-definitions}
+
+::: {#def-markov-chain}
+## Markov chain
+A sequence of random variables $X_0,X_1,\dots$ on a state space $\mathsf X$ is a (time-homogeneous) **Markov chain** with **transition kernel** $P$ if, for every $t\ge0$ and every set $A$,
+$$
+\mathbb P(X_{t+1}\in A\mid X_0,\dots,X_t)=\mathbb P(X_{t+1}\in A\mid X_t)=P(X_t,A).
+$$
+For each $x$, $P(x,\cdot)$ is a probability distribution. On a finite space $\mathsf X=\{1,\dots,K\}$, $P$ is a $K\times K$ **transition matrix** with $P_{ij}=\mathbb P(X_{t+1}=j\mid X_t=i)\ge0$ and rows summing to one.
+:::
+
+The future depends on the past only through the present. A distribution $\mu$ of $X_0$, written as a row vector in the finite case, evolves as $\mu\mapsto\mu P$: $\mathbb P(X_1=j)=\sum_i\mu_iP_{ij}$. In general, $(\mu P)(A)=\int\mu(dx)P(x,A)$.
+
+::: {#prp-chapman-kolmogorov}
+## Chapman–Kolmogorov equations
+The $n$-step transition probabilities $P^n(x,A)=\mathbb P(X_{t+n}\in A\mid X_t=x)$ satisfy $P^{m+n}=P^mP^n$. On a finite space $P^n$ is the $n$-th matrix power, and $X_n\sim\mu P^n$.
+:::
+
+::: {.proof}
+By the Markov property and the law of total probability, $\mathbb P(X_{m+n}=j\mid X_0=i)=\sum_k\mathbb P(X_m=k\mid X_0=i)\,\mathbb P(X_{m+n}=j\mid X_m=k)=\sum_kP^m_{ik}P^n_{kj}$. The general case replaces the sum by an integral.
+:::
+
+::: {#def-stationary}
+## Stationary (invariant) distribution
+A probability distribution $\pi$ is **stationary** (or **invariant**) for $P$ if $\pi P=\pi$: on a finite space $\sum_i\pi_iP_{ij}=\pi_j$ for all $j$, and in general $\int\pi(dx)P(x,A)=\pi(A)$ for all $A$. If $X_0\sim\pi$, then $X_t\sim\pi$ for every $t$, and the chain is **stationary**.
+:::
+
+::: {#def-detailed-balance}
+## Detailed balance and reversibility
+$P$ satisfies **detailed balance** with respect to $\pi$ if
+$$
+\pi(dx)\,P(x,dy)=\pi(dy)\,P(y,dx),\qquad\text{on a finite space: }\pi_iP_{ij}=\pi_jP_{ji}\text{ for all }i,j.
+$$ {#eq-detailed-balance}
+Such a $P$ is called **$\pi$-reversible**.
+:::
+
+## Mathematical development {#sec-chains-development}
+
+### Detailed balance implies invariance {#sec-chains-detailed-balance}
+
+::: {#prp-db-invariance}
+## Detailed balance implies stationarity
+If $P$ satisfies detailed balance with respect to $\pi$, then $\pi P=\pi$.
+:::
+
+::: {.proof}
+Finite case: $\sum_i\pi_iP_{ij}=\sum_i\pi_jP_{ji}=\pi_j\sum_iP_{ji}=\pi_j$. General case: integrate @eq-detailed-balance over $x\in\mathsf X$ and $y\in A$: $\int_{\mathsf X}\pi(dx)P(x,A)=\int_A\pi(dy)P(y,\mathsf X)=\pi(A)$.
+:::
+
+Detailed balance is **sufficient but not necessary** for invariance. It is a *local* condition: the probability flow from $x$ to $y$ equals the flow from $y$ to $x$. Invariance needs only *global* balance, where the total flow into each state equals the total flow out. Detailed balance is popular because it can be checked pair by pair, and because it is how the Metropolis–Hastings algorithm is built (@sec-mh). Non-reversible chains, which satisfy invariance without detailed balance, can mix faster [@diaconis2000analysis] and reappear in @sec-mcmc-theory.
+
+**Why "reversible"?** If $X_0\sim\pi$ and $P$ satisfies detailed balance, then $(X_0,X_1)$ and $(X_1,X_0)$ have the same joint distribution, $\pi_iP_{ij}=\pi_jP_{ji}$, and by induction the stationary chain run backwards in time has the same law as the chain run forwards.
+
+### Irreducibility and periodicity {#sec-chains-irreducibility}
+
+Invariance alone does not imply that the chain *finds* $\pi$. A chain that never leaves the state where it started has every point mass as a stationary distribution. Two further conditions are needed.
+
+::: {#def-irreducible}
+## Irreducibility
+A finite chain is **irreducible** if every state can reach every other: for all $i,j$ there is $n\ge1$ with $P^n_{ij}>0$. On a general space, $P$ is **$\varphi$-irreducible** for a non-zero measure $\varphi$ if every set $A$ with $\varphi(A)>0$ is reached with positive probability from every starting point. MCMC theory usually takes $\varphi=\pi$ [@tierney1994markov; @roberts2004general].
+:::
+
+::: {#def-period}
+## Period and aperiodicity
+The **period** of state $i$ is $d(i)=\gcd\{n\ge1:P^n_{ii}>0\}$. In an irreducible chain all states have the same period [@norris1997markov, Section 1.8]. The chain is **aperiodic** if the period is 1.
+:::
+
+A chain with period $d>1$ cycles deterministically through $d$ classes of states. Its distribution $\mu P^n$ then oscillates and never converges, even though its time averages may converge (see the experiment). Aperiodicity is easy to ensure in MCMC. Any chain with $P(x,\{x\})>0$ for some $x$ (some probability of staying put, as in every Metropolis–Hastings chain with a positive rejection probability) is aperiodic if it is irreducible.
+
+### Recurrence and transience {#sec-chains-recurrence}
+
+A state $i$ is **recurrent** if the chain started at $i$ returns to $i$ with probability one, and **transient** otherwise. A recurrent state is **positive recurrent** if the expected return time $\mathbb E_i[T_i]$ is finite, and **null recurrent** otherwise. For an irreducible chain on a countable space, all states share the same classification, and
+
+> a stationary distribution exists if and only if the chain is positive recurrent, in which case it is unique and $\pi_i=1/\mathbb E_i[T_i]$ [@norris1997markov, Theorem 1.7.7].
+
+Every irreducible chain on a *finite* space is positive recurrent. On infinite spaces anything can happen. The simple symmetric random walk on $\mathbb Z$ is null recurrent: it returns to its starting point with probability one, but after an infinite expected time, and it has no stationary distribution. On $\mathbb Z^d$ with $d\ge3$ it is transient: it eventually leaves every bounded set for good. A random-walk Metropolis sampler (@sec-mh) targeting an *improper* posterior behaves like these walks. It never settles into a stationary distribution, yet over any finite run its output can look superficially reasonable (@exr-prior-7).
+
+On general state spaces the relevant strengthening is **Harris recurrence**: every set of positive $\pi$-measure is visited infinitely often *from every starting point*, not only from $\pi$-almost every starting point. It removes a pathology in which a chain behaves correctly except from a "bad" null set of initial values [@roberts2004general, Section 3].
+
+### Convergence to equilibrium {#sec-chains-convergence}
+
+We measure the distance between distributions in **total variation**:
+$$
+\lVert\mu-\nu\rVert_{\mathrm{TV}}=\sup_A\lvert\mu(A)-\nu(A)\rvert=\tfrac12\sum_x\lvert\mu(x)-\nu(x)\rvert\quad\text{(finite case)}.
+$$
+
+::: {#thm-finite-convergence}
+## Convergence of finite chains
+Let $P$ be an irreducible, aperiodic transition matrix on a finite state space, with stationary distribution $\pi$. Then there are an integer $m\ge1$ and $\epsilon\in(0,1]$ such that, for every initial distribution $\mu$ and every $n\ge0$,
+$$
+\lVert\mu P^n-\pi\rVert_{\mathrm{TV}}\le(1-\epsilon)^{\lfloor n/m\rfloor}.
+$$
+In particular $\pi$ is the unique stationary distribution, and convergence is geometric.
+:::
+
+::: {.proof}
+*Step 1 (a power of $P$ is strictly positive).* For an irreducible aperiodic chain on a finite space there is $m$ with $P^m_{ij}>0$ for all $i,j$ [@levin2017markov, Proposition 1.7]. The proof combines irreducibility with the number-theoretic fact that a set of positive integers closed under addition and with greatest common divisor 1 contains all sufficiently large integers. Let $\epsilon=\min_{i,j}P^m_{ij}/\pi_j$. Then $\epsilon>0$, and $\epsilon\le1$ because $\sum_jP^m_{ij}=\sum_j\pi_j=1$.
+
+*Step 2 (minorisation and decomposition).* If $\epsilon=1$ then $P^m_{ij}=\pi_j$ and the claim is trivial. Otherwise let $\Pi$ be the matrix whose rows all equal $\pi$, and define $R=(P^m-\epsilon\Pi)/(1-\epsilon)$. By the choice of $\epsilon$, $R$ has non-negative entries, and its rows sum to one, so $R$ is a transition matrix and $P^m=\epsilon\Pi+(1-\epsilon)R$.
+
+*Step 3 (contraction).* For any two distributions $\mu,\nu$, $\mu\Pi=\nu\Pi=\pi$, so $(\mu-\nu)P^m=(1-\epsilon)(\mu-\nu)R$. Any transition matrix $R$ is a contraction in total variation:
+$\tfrac12\sum_j\lvert\sum_i(\mu_i-\nu_i)R_{ij}\rvert\le\tfrac12\sum_i\lvert\mu_i-\nu_i\rvert\sum_jR_{ij}=\lVert\mu-\nu\rVert_{\mathrm{TV}}$. Hence $\lVert\mu P^m-\nu P^m\rVert_{\mathrm{TV}}\le(1-\epsilon)\lVert\mu-\nu\rVert_{\mathrm{TV}}$.
+
+*Step 4 (iterate).* Write $n=km+r$ with $0\le r<m$. Using $\pi P=\pi$ and Step 3 $k$ times with $\nu=\pi$,
+$\lVert\mu P^n-\pi\rVert_{\mathrm{TV}}=\lVert(\mu P^r)P^{km}-\pi P^{km}\rVert_{\mathrm{TV}}\le(1-\epsilon)^k\lVert\mu P^r-\pi\rVert_{\mathrm{TV}}\le(1-\epsilon)^k$.
+If $\pi'$ were another stationary distribution, then $\pi'=\pi'P^n\to\pi$, so $\pi'=\pi$.
+:::
+
+Step 2 is a **minorisation condition**, $P^m(i,\cdot)\ge\epsilon\,\pi(\cdot)$: from every state, after $m$ steps, the chain has a probability of at least $\epsilon$ of "regenerating" from $\pi$ regardless of where it was. This argument is the prototype for the drift-and-minorisation theory of @sec-mcmc-theory [@rosenthal1995minorization], where on unbounded state spaces a uniform minorisation fails and must be combined with a drift condition.
+
+**Spectral view.** For a $\pi$-reversible $P$, the matrix $D^{1/2}PD^{-1/2}$ with $D=\operatorname{diag}(\pi)$ is symmetric (this is exactly detailed balance), so $P$ has real eigenvalues $1=\lambda_1>\lambda_2\ge\dots\ge\lambda_K>-1$ when irreducible and aperiodic. The distance to stationarity decays like $\lambda_\ast^n$ with $\lambda_\ast=\max(\lambda_2,\lvert\lambda_K\rvert)$, and the **spectral gap** $1-\lambda_\ast$ governs the speed of convergence [@levin2017markov, Chapter 12]. For the two-state chain $P=\begin{pmatrix}1-a&a\\b&1-b\end{pmatrix}$, one has $\pi=(b,a)/(a+b)$, $\lambda_2=1-a-b$, and
+$$
+\lVert\delta_1P^n-\pi\rVert_{\mathrm{TV}}=\frac{a}{a+b}\,\lvert1-a-b\rvert^n,
+$$ {#eq-two-state-tv}
+which `tests/testthat/test-markov-chains.R` checks exactly.
+
+### Ergodic averages and the law of large numbers {#sec-chains-lln}
+
+For estimation we need more than convergence of the distribution of $X_n$. We need the *time average* $\hat\mu_N=\frac1N\sum_{t=1}^Nf(X_t)$ to converge to $\pi(f)$.
+
+::: {#thm-ergodic-finite}
+## Ergodic theorem (finite chains)
+If $P$ is irreducible on a finite space with stationary $\pi$, then for every initial distribution and every $f$, $\frac1N\sum_{t=1}^Nf(X_t)\to\pi(f)$ almost surely [@norris1997markov, Theorem 1.10.2].
+:::
+
+Aperiodicity is **not** needed for the ergodic theorem, only for convergence of $\mu P^n$. A periodic chain's distribution oscillates, but its time averages still converge. On general spaces:
+
+::: {#thm-tierney}
+## Convergence of MCMC on general state spaces (Tierney)
+Suppose $P$ is $\pi$-irreducible and has $\pi$ as an invariant distribution. Then $\pi$ is the unique invariant distribution, and for every $f$ with $\pi(\lvert f\rvert)<\infty$, $\frac1N\sum_{t=1}^Nf(X_t)\to\pi(f)$ almost surely for $\pi$-almost every starting point. If in addition $P$ is aperiodic, then $\lVert P^n(x,\cdot)-\pi\rVert_{\mathrm{TV}}\to0$ for $\pi$-almost every $x$. If $P$ is also Harris recurrent, both statements hold for *every* starting point [@tierney1994markov, Theorems 1 and 3; @roberts2004general, Section 3].
+:::
+
+The result is remarkable for what it does *not* require: no rate of convergence and no moment beyond integrability of $f$. It is also weak for practical purposes. It says nothing about *how long* is long enough, and without a rate there is no central limit theorem and no valid Monte Carlo standard error.
+
+### Dependence and the variance of ergodic averages {#sec-chains-variance}
+
+For a stationary chain ($X_0\sim\pi$) and a function $f$ with $\pi(f^2)<\infty$, define the autocovariances $\gamma_k=\operatorname{Cov}(f(X_0),f(X_k))$. They do not depend on the time origin, by stationarity, and $\gamma_0=\operatorname{Var}_\pi(f)$.
+
+::: {#prp-variance-dependent}
+## Variance of an average of dependent draws
+For a stationary chain,
+$$
+N\operatorname{Var}(\hat\mu_N)=\gamma_0+2\sum_{k=1}^{N-1}\Big(1-\frac kN\Big)\gamma_k.
+$$ {#eq-var-dependent}
+If $\sum_{k\ge1}\lvert\gamma_k\rvert<\infty$, then $N\operatorname{Var}(\hat\mu_N)\to\sigma_f^2:=\gamma_0+2\sum_{k\ge1}\gamma_k=\gamma_0\tau_f$, where
+$$
+\tau_f=1+2\sum_{k=1}^\infty\rho_k,\qquad\rho_k=\gamma_k/\gamma_0,
+$$ {#eq-iat}
+is the **integrated autocorrelation time**.
+:::
+
+::: {.proof}
+$N^2\operatorname{Var}(\hat\mu_N)=\sum_{s,t=1}^N\operatorname{Cov}(f(X_s),f(X_t))=\sum_{s,t}\gamma_{\lvert s-t\rvert}$. There are $N$ pairs with $\lvert s-t\rvert=0$ and $2(N-k)$ pairs with $\lvert s-t\rvert=k\ge1$, which gives @eq-var-dependent after dividing by $N$. Under absolute summability, each term $(1-k/N)\gamma_k\to\gamma_k$ and is bounded by $\lvert\gamma_k\rvert$, so dominated convergence (for series) gives the limit.
+:::
+
+This is the bridge between Markov chain theory and Monte Carlo error. If the draws were independent, the variance would be $\gamma_0/N$. With positive autocorrelation it is approximately $\gamma_0\tau_f/N$, as if we had only
+$$
+N_{\text{eff}}=N/\tau_f
+$$
+independent draws: the **effective sample size**. The naive standard error $\hat\sigma/\sqrt N$ of @sec-monte-carlo then underestimates the true error by a factor of about $\sqrt{\tau_f}$.
+
+::: {#exm-ar1}
+## The AR(1) chain
+$X_t=\phi X_{t-1}+\varepsilon_t$ with $\varepsilon_t\stackrel{\text{iid}}\sim\mathrm N(0,1)$ and $\lvert\phi\rvert<1$ is a Markov chain on $\mathbb R$ with kernel $P(x,\cdot)=\mathrm N(\phi x,1)$ and stationary distribution $\pi=\mathrm N(0,1/(1-\phi^2))$. Indeed, if $X_{t-1}\sim\pi$ then $X_t$ is normal with mean 0 and variance $\phi^2/(1-\phi^2)+1=1/(1-\phi^2)$. It satisfies detailed balance (@exr-chains-3). For $f(x)=x$, $\rho_k=\phi^k$, so
+$$
+\tau_f=1+2\sum_{k\ge1}\phi^k=\frac{1+\phi}{1-\phi}.
+$$
+With $\phi=0.9$, $\tau_f=19$: $10\,000$ draws carry the information of about 526 independent draws. With $\phi=-0.5$, $\tau_f=1/3$: negative correlation makes the chain *more* efficient than independent sampling (an *antithetic* chain). From any $x_0$, $X_n\mid X_0=x_0\sim\mathrm N\big(\phi^nx_0,\frac{1-\phi^{2n}}{1-\phi^2}\big)$, which converges to $\pi$ geometrically at rate $\lvert\phi\rvert^n$.
+:::
+
+The integrated autocorrelation time depends on the function $f$ as well as on the chain. For a reversible finite chain, expanding $f$ in the eigenvectors of $P$ gives $\tau_f$ as a weighted average of $(1+\lambda_j)/(1-\lambda_j)$ over the eigenvalues $\lambda_j\neq1$, so functions concentrated on slowly mixing eigen-directions have large $\tau_f$ [@sokal1997monte; @geyer1992practical].
+
+### Which conditions guarantee what {#sec-chains-conditions}
+
+The table summarises the logical status of the conditions used in MCMC. *Necessary* means the conclusion fails without the condition. *Sufficient* means the condition, together with the others in its row, implies the conclusion. *Convenient* means it is used because it is easy to verify, not because it is needed.
+
+| Conclusion | Conditions | Status |
+|:--|:--|:--|
+| $\pi$ is invariant | $\pi P=\pi$ | necessary and sufficient (by definition) |
+| | detailed balance (@eq-detailed-balance) | sufficient, not necessary; convenient to verify |
+| $\pi$ is the unique invariant law; LLN for $\pi$-a.e. start | $\pi$-irreducibility + invariance (@thm-tierney) | sufficient |
+| LLN from every start | + Harris recurrence | sufficient |
+| $\lVert P^n(x,\cdot)-\pi\rVert_{\mathrm{TV}}\to0$ | + aperiodicity | sufficient; aperiodicity necessary for this conclusion |
+| Geometric convergence | finite state space with the above; on general spaces, drift + minorisation (@sec-mcmc-theory) | sufficient |
+| CLT with $\sigma_f^2=\gamma_0\tau_f$ | geometric ergodicity + $\pi(\lvert f\rvert^{2+\delta})<\infty$, or reversibility + $\sigma_f^2<\infty$ | sufficient [@jones2004markov; @kipnis1986central] |
+| Valid MCSE from one run | CLT + consistent estimator of $\sigma_f^2$ | sufficient [@flegal2010batch] |
+: Conditions in MCMC convergence theory. {#tbl-mcmc-conditions}
+
+Two warnings. First, **all of these are asymptotic statements.** They guarantee correct behaviour as $N\to\infty$ and say nothing directly about any particular finite run, which is the subject of @sec-why-mcmc and Part V. Second, the CLT can fail for an ergodic chain. Without geometric ergodicity or a similar rate condition, $\sigma_f^2$ may be infinite and Monte Carlo standard errors meaningless [@roberts2004general; @jones2004markov].
+
+## Worked example: a five-state chain and an AR(1) chain {#sec-chains-worked}
+
+**A birth–death chain.** On states $\{1,\dots,5\}$, a chain moves one step left or right with probabilities chosen so that it is reversible with respect to $\pi\propto(1,2,4,2,1)$. From state $i$, propose $i\pm1$ with probability $\frac12$ each, and accept a move to $j$ with probability $\min(1,\pi_j/\pi_i)$; otherwise stay. This is a Metropolis chain, previewing @sec-mh. Moves off the ends are always rejected.
+
+```{r}
+#| label: chains-five-state
+target <- c(1, 2, 4, 2, 1) / 10
+K <- 5
+P <- matrix(0, K, K)
+for (i in 1:K) for (j in c(i - 1, i + 1)) if (j >= 1 && j <= K) P[i, j] <- 0.5 * min(1, target[j] / target[i])
+diag(P) <- 1 - rowSums(P)
+round(P, 3)
+c(stationary_ok = isTRUE(all.equal(stationary_distribution(P), target)),
+  reversible = is_reversible(P, target))
+ev <- eigen(P, only.values = TRUE)$values
+round(ev, 4)                                     # real eigenvalues: P is reversible
+```
+
+The eigenvalues are real, as reversibility requires, and the second largest controls the convergence rate.
+
+```{r}
+#| label: fig-chains-convergence
+#| fig-cap: "Total variation distance between the distribution of $X_n$ and $\\pi$ for the five-state chain started at state 1 and at state 3 (log scale), with the asymptotic rate $\\lambda_\\ast^n$ (dashed)."
+#| fig-height: 3.4
+ns <- 0:40
+tv1 <- sapply(ns, function(n) tv_distance(matrix_power(P, n)[1, ], target))
+tv3 <- sapply(ns, function(n) tv_distance(matrix_power(P, n)[3, ], target))
+lam <- max(abs(ev[-1]))
+plot(ns, tv1, log = "y", type = "b", pch = 16, cex = 0.6, col = course_cols[["blue"]], ylim = c(1e-6, 1),
+     xlab = "n", ylab = "TV distance to stationarity")
+lines(ns, tv3, type = "b", pch = 16, cex = 0.6, col = course_cols[["orange"]])
+lines(ns, lam^ns, lty = 2, col = course_muted)
+legend("topright", c("start at 1", "start at 3", expression(lambda["*"]^n)), col = c(course_cols[c("blue", "orange")], course_muted),
+       lty = c(1, 1, 2), pch = c(16, 16, NA), bty = "n", cex = 0.85)
+```
+
+**Ergodic averages and their error.** We simulate a long path and estimate $\pi(f)$ for $f(x)=x$, whose exact value is $\sum_ii\pi_i=3$. The naive standard error ignores dependence. The correct one uses $\tau_f$ estimated from the path (@sec-mixing gives the estimator).
+
+```{r}
+#| label: chains-ergodic-average
+set.seed(1001)
+path <- simulate_chain(P, 50000, x0 = 1)[-1]
+c(estimate = mean(path), truth = sum(1:5 * target),
+  naive_se = sd(path) / sqrt(length(path)), tau_hat = iat(path),
+  correct_se = sd(path) * sqrt(iat(path) / length(path)))
+```
+
+The integrated autocorrelation time is about 7, close to $(1+\lambda_2)/(1-\lambda_2)=7$ for the slowest eigenvalue $\lambda_2=0.75$, so the naive standard error is too small by a factor of about $\sqrt7\approx2.7$.
+
+## R implementation {#sec-chains-r}
+
+The finite-chain utilities used above are in `R/models/markov-chains.R`:
+
+```{r}
+#| file: R/models/markov-chains.R
+```
+
+`stationary_distribution()` solves the linear system $\pi(P-I)=0$, $\sum\pi_i=1$ directly rather than computing eigenvectors. Both approaches are fine for small $K$, but solving the system makes the normalisation explicit and works whether or not $P$ is reversible.
+
+## Computational experiment {#sec-chains-experiment}
+
+**Periodic chains: averages converge, distributions do not.** For the deterministic flip chain $P=\begin{pmatrix}0&1\\1&0\end{pmatrix}$, $\pi=(\frac12,\frac12)$ is stationary, the chain is irreducible but has period 2, and $\delta_1P^n$ alternates between $(1,0)$ and $(0,1)$. A lazy version $(I+P)/2$ is aperiodic:
+
+```{r}
+#| label: chains-periodic
+Pf <- matrix(c(0, 1, 1, 0), 2)
+Pl <- (diag(2) + Pf) / 2
+rbind(periodic_P10 = matrix_power(Pf, 10)[1, ], periodic_P11 = matrix_power(Pf, 11)[1, ],
+      lazy_P10 = matrix_power(Pl, 10)[1, ])
+set.seed(1002)
+c(time_average_periodic = mean(simulate_chain(Pf, 1001, 1)[-1] == 1),
+  time_average_lazy = mean(simulate_chain(Pl, 1e4, 1)[-1] == 1))
+```
+
+**Autocorrelation inflates Monte Carlo error.** For AR(1) chains with different $\phi$, we compare the actual variability of the chain average over 500 independent chains with the naive standard error and with $\sqrt{\gamma_0\tau_f/N}$:
+
+```{r}
+#| label: chains-ar1-error
+set.seed(1003)
+N <- 2000
+res <- t(sapply(c(-0.5, 0, 0.5, 0.9, 0.99), function(phi) {
+  means <- replicate(500, mean(simulate_ar1(N, phi)))
+  g0 <- 1 / (1 - phi^2); tau <- (1 + phi) / (1 - phi)
+  c(phi = phi, tau = tau, actual_sd_of_mean = sd(means), naive_se = sqrt(g0 / N), theory_se = sqrt(g0 * tau / N))
+}))
+round(res, 4)
+```
+
+For $\phi=0.99$ the naive standard error is too small by a factor of about 14 ($\sqrt{199}$). Equivalently, 2000 draws are worth about 10 independent ones, which shows why ignoring autocorrelation is the most consequential error in reporting MCMC results.
+
+```{r}
+#| label: fig-chains-ar1-traces
+#| fig-cap: "AR(1) chains with the same stationary distribution after rescaling to unit variance, for $\\phi=0$, $0.9$ and $0.99$ (top to bottom). Stronger autocorrelation produces slower exploration of the same distribution."
+#| fig-height: 4.5
+set.seed(1004)
+par(mfrow = c(3, 1), mar = c(2.5, 4, 1, 1))
+for (phi in c(0, 0.9, 0.99)) {
+  x <- simulate_ar1(1000, phi) * sqrt(1 - phi^2)
+  plot(x, type = "l", col = course_cols[["blue"]], lwd = 0.7, ylab = bquote(phi == .(phi)), xlab = "", ylim = c(-3.5, 3.5))
+}
+```
+
+## Diagnostics and validation {#sec-chains-validation}
+
+For a finite chain, everything can be checked exactly:
+
+- **Invariance**: verify $\pi P=\pi$ numerically (or detailed balance) for the intended target, as `mh_transition_matrix()` and its test do in @sec-mh.
+- **Convergence**: compute $\lVert\mu P^n-\pi\rVert_{\mathrm{TV}}$ by matrix powers, and compare with the spectral rate.
+- **Error of averages**: compare naive and autocorrelation-adjusted standard errors, and verify the adjusted error against replicated chains, as above.
+
+For general state spaces these exact computations are impossible. Part V develops the empirical diagnostics (multiple chains, $\widehat R$, effective sample size) that replace them, together with an account of what they can and cannot establish.
+
+## Interpretation {#sec-chains-interpretation}
+
+A Markov chain designed for a target $\pi$ produces draws that are *eventually* distributed approximately according to $\pi$, and whose *averages* converge to expectations under $\pi$, but each draw carries less information than an independent one. The integrated autocorrelation time measures exactly how much less. Every MCMC result must therefore be reported with an error that accounts for dependence.
+
+## Limitations and common errors {#sec-chains-errors}
+
+- **Equating invariance with convergence.** A chain can leave $\pi$ invariant and still fail to converge to it (reducible or periodic chains), or converge too slowly to be useful.
+- **Believing detailed balance is required.** It is sufficient, not necessary.
+- **Using the naive standard error** for correlated draws, which understates the error by about $\sqrt{\tau_f}$.
+- **Assuming a CLT holds because the LLN does.** The CLT needs rate conditions (@tbl-mcmc-conditions).
+- **Ignoring the starting point.** The ergodic theorem for general spaces may hold only for $\pi$-almost every starting point unless the chain is Harris recurrent, and the transient behaviour from a poor start can dominate any finite run (@sec-why-mcmc).
+
+## Chapter summary {#sec-chains-summary}
+
+- A Markov chain is defined by its transition kernel. Distributions evolve as $\mu\mapsto\mu P$, and $n$-step kernels are powers $P^n$.
+- A distribution is stationary if $\pi P=\pi$. Detailed balance is a sufficient local condition (@prp-db-invariance).
+- Irreducible aperiodic finite chains converge to their unique stationary distribution geometrically fast in total variation (@thm-finite-convergence). On general spaces, $\pi$-irreducibility and invariance give an LLN, and aperiodicity and Harris recurrence strengthen it (@thm-tierney).
+- Averages along a stationary chain have variance $\approx\gamma_0\tau_f/N$ (@prp-variance-dependent), so the effective sample size is $N/\tau_f$.
+- Each convergence conclusion rests on specific sufficient conditions (@tbl-mcmc-conditions), and all are asymptotic.
+
+## Exercises {#sec-chains-exercises}
+
+::: {#exr-chains-1}
+**[Mathematical ★]** For the two-state chain with $a=0.2$, $b=0.6$, compute $\pi$, $P^n$ in closed form, and $\tau_f$ for $f=\mathbf 1\{X=2\}$.
+:::
+
+::: {#exr-chains-2}
+**[Proof ★★]** Prove that if $\pi$ is stationary for $P$ and $P$ is irreducible on a finite space, then $\pi_i>0$ for all $i$.
+:::
+
+::: {#exr-chains-3}
+**[Proof ★★]** Show that the AR(1) chain of @exm-ar1 satisfies detailed balance with respect to $\mathrm N(0,1/(1-\phi^2))$, by showing that the joint density of $(X_0,X_1)$ under stationarity is symmetric in its arguments.
+:::
+
+::: {#exr-chains-4}
+**[Mathematical ★★]** Construct a three-state transition matrix that has the uniform distribution as its stationary distribution but does **not** satisfy detailed balance. Compute its eigenvalues. Are they real?
+:::
+
+::: {#exr-chains-5}
+**[Proof ★★]** Show that for a stationary AR(1) chain with $\phi\in(-1,1)$, $N\operatorname{Var}(\hat\mu_N)$ equals $\gamma_0\big[\frac{1+\phi}{1-\phi}-\frac{2\phi(1-\phi^N)}{N(1-\phi)^2}\big]$, and deduce the rate at which it approaches $\gamma_0\tau_f$.
+:::
+
+::: {#exr-chains-6}
+**[R ★★]** For the five-state chain of the worked example, compute $\tau_f$ exactly for $f(x)=x$ and $g(x)=\mathbf 1\{x=3\}$ using the spectral decomposition (or by summing autocovariances computed from matrix powers), and compare with estimates from simulated paths.
+:::
+
+::: {#exr-chains-7}
+**[Simulation ★★]** Simulate the simple symmetric random walk on $\mathbb Z$ for $10^5$ steps, 200 times. Plot the running average of $\mathbf 1\{\lvert X_t\rvert\le10\}$ for several paths. Explain why it converges to 0 even though the walk returns to 0 infinitely often, and connect this to null recurrence.
+:::
+
+::: {#exr-chains-8}
+**[Conceptual ★★]** A sampler leaves the posterior invariant and is irreducible, but its output has $\tau_f\approx5000$ for the parameter of interest. You have $10^5$ iterations. Summarise in three sentences what can and cannot be concluded from the output.
+:::
+
+::: {#exr-chains-9}
+**[Research ★★★]** The *lifting* construction [@diaconis2000analysis] produces non-reversible chains that move "with momentum". Implement the lifted random walk on a cycle of $K$ states and compare its mixing time with that of the reversible random walk, as a function of $K$.
+:::
+
+## Further reading {#sec-chains-reading}
+
+- @norris1997markov: discrete-time Markov chains on countable spaces, including recurrence, invariant distributions and the ergodic theorem.
+- @levin2017markov: mixing times, coupling and spectral methods for finite chains.
+- @tierney1994markov and @roberts2004general: general-state-space theory as it applies to MCMC.
+- @meyn2009markov: the comprehensive reference on general state-space Markov chains.
+- @geyer1992practical and @sokal1997monte: autocorrelation, integrated autocorrelation time and the variance of MCMC averages.
+- @jones2004markov: conditions for the Markov chain central limit theorem.
+
+## Solutions {#sec-chains-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-chains-1
+$\pi=(b,a)/(a+b)=(0.75,0.25)$ and $\lambda_2=1-a-b=0.2$. $P^n=\Pi+\lambda_2^n\begin{pmatrix}a/(a+b)&-a/(a+b)\\-b/(a+b)&b/(a+b)\end{pmatrix}$. For $f=\mathbf 1\{X=2\}$, $\rho_k=\lambda_2^k$, so $\tau_f=(1+0.2)/(1-0.2)=1.5$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-chains-2
+$\pi$ has some $\pi_j>0$. For any $i$, irreducibility gives $n$ with $P^n_{ji}>0$, and stationarity gives $\pi_i=\sum_k\pi_kP^n_{ki}\ge\pi_jP^n_{ji}>0$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-chains-3
+With $v=1/(1-\phi^2)$, $p(x_0,x_1)=\mathrm N(x_0\mid0,v)\,\mathrm N(x_1\mid\phi x_0,1)\propto\exp\{-\frac{x_0^2(1-\phi^2)}2-\frac{(x_1-\phi x_0)^2}2\}=\exp\{-\frac12(x_0^2+x_1^2-2\phi x_0x_1)\}$, which is symmetric in $(x_0,x_1)$. Symmetry of the joint density is exactly @eq-detailed-balance.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-chains-4
+Take $Q=\begin{pmatrix}0.1&0.9&0\\0&0.1&0.9\\0.9&0&0.1\end{pmatrix}$ (as in the test file). Columns sum to one, so the uniform distribution is stationary. But $\pi_1Q_{12}=0.3\neq\pi_2Q_{21}=0$, so detailed balance fails. The eigenvalues are $1$ and $0.1+0.9\,e^{\pm2\pi i/3}$, which are complex. Non-reversible chains can have complex eigenvalues, and then their distributions approach $\pi$ while rotating.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-chains-5
+With $\gamma_k=\gamma_0\phi^k$, @eq-var-dependent gives $N\operatorname{Var}(\hat\mu_N)=\gamma_0\big[1+2\sum_{k=1}^{N-1}(1-\frac kN)\phi^k\big]$. Using $\sum_{k=1}^{N-1}\phi^k=\frac{\phi-\phi^N}{1-\phi}$ and $\sum_{k=1}^{N-1}k\phi^k=\frac{\phi-N\phi^N+(N-1)\phi^{N+1}}{(1-\phi)^2}$, the bracket simplifies to $\frac{1+\phi}{1-\phi}-\frac{2\phi(1-\phi^N)}{N(1-\phi)^2}$. The correction is $O(1/N)$: for large $N$ the asymptotic formula is accurate.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-chains-6
+With $\gamma_k=\sum_{i,j}\pi_i(P^k)_{ij}(f_i-\bar f)(f_j-\bar f)$, sum $\gamma_k$ until it is negligible:
+```{r}
+#| eval: false
+tau_exact <- function(f) {
+  fc <- f - sum(target * f)
+  g <- sapply(0:200, function(k) sum(target * fc * (matrix_power(P, k) %*% fc)))
+  1 + 2 * sum(g[-1]) / g[1]
+}
+c(tau_x = tau_exact(1:5), tau_ind3 = tau_exact(as.numeric(1:5 == 3)))
+```
+The two differ because $f(x)=x$ loads on the slow antisymmetric eigenvector (moving from one end to the other), while $\mathbf 1\{x=3\}$ is symmetric about the centre and loads on faster modes. Estimates from paths of length $10^5$ (`iat()`) agree within a few percent.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-chains-7
+The walk is null recurrent: it returns to every state with probability one, but the expected return time is infinite, and the fraction of time spent in any bounded set tends to zero, since $\mathbb P(\lvert X_t\rvert\le10)=O(t^{-1/2})$. Running averages of bounded indicators therefore tend to 0, the "stationary distribution" would have to assign zero mass to every bounded set, and none exists. An MCMC sampler on an improper posterior behaves like this.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-chains-8
+The output provides about $10^5/5000=20$ effective draws for this parameter: a posterior mean can be estimated only roughly (MCSE $\approx\sigma/\sqrt{20}\approx0.22\sigma$), and tail quantiles hardly at all. Invariance and irreducibility guarantee eventual correctness but not a reliable error estimate from so few effective draws, since $\tau_f$ itself is poorly estimated. Either run much longer or, better, find a sampler or parameterisation with smaller $\tau_f$ (Chapters 15, 16 and 21).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-chains-9
+The reversible lazy walk on a $K$-cycle needs on the order of $K^2$ steps to mix (diffusive behaviour). The lifted chain keeps a direction variable, moving consistently clockwise or anticlockwise and reversing with probability about $1/K$ per step, and mixes in order $K$ steps. Measure the TV distance to uniform via matrix powers on the $2K$-state lifted space for $K=10,20,40,80$, and plot the mixing time against $K$ on log–log axes: the slopes should be about 2 and 1.
+:::

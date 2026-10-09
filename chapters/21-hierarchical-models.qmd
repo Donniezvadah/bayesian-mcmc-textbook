@@ -1,0 +1,369 @@
+# Hierarchical and Multilevel Models {#sec-hierarchical}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. motivate hierarchical models through exchangeability, and contrast complete pooling, no pooling and partial pooling;
+2. derive the shrinkage form of the posterior in the normal hierarchical model, and the marginal posterior of the group-level standard deviation;
+3. choose priors for variance components, and recognise improper or near-improper choices;
+4. explain the funnel geometry of hierarchical posteriors, and decide between centred and non-centred parameterisations depending on how informative the data are;
+5. diagnose weak identification, and check hierarchical models with posterior predictive checks;
+6. fit hierarchical models in R with exact sampling, Gibbs sampling and HMC, and compare the results with Stan.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-conjugate (normal models), @sec-prior-improper (propriety in the hierarchical model), @sec-gibbs-worked-hier, @sec-hmc (divergences), @sec-diagnostics, @sec-regression.
+:::
+
+## Motivation {#sec-hier-motivation}
+
+Data often come in groups: students within schools, patients within hospitals, measurements within subjects, counts within looms. Group-level parameters $\theta_j$ (one per group) are neither identical nor unrelated. Estimating them separately ("no pooling") is noisy for small groups, and estimating a single common value ("complete pooling") ignores real differences. A **hierarchical model** treats the $\theta_j$ as draws from a common population distribution whose parameters are themselves estimated, so that each group's estimate borrows strength from the others in proportion to how similar the groups turn out to be. The result is *partial pooling*: an adaptive compromise determined by the data. Hierarchical models are among the most useful tools in applied statistics [@gelman2006data; @gelman2013bda, Chapter 5], and among the hardest posteriors to sample. This chapter covers both aspects.
+
+## Definitions and notation {#sec-hier-definitions}
+
+::: {#def-exchangeability}
+## Exchangeability
+Random variables $\theta_1,\dots,\theta_J$ are **exchangeable** if their joint distribution is invariant under permutations of the indices.
+:::
+
+Exchangeability expresses the judgement that, before seeing the data, we have no information distinguishing one group from another. By de Finetti's representation theorem, an infinitely exchangeable sequence can be written as conditionally i.i.d. given some latent quantity $\phi$ [@bernardo1994theory, Chapter 4]: $p(\theta_1,\dots,\theta_J)=\int\prod_jp(\theta_j\mid\phi)\,p(\phi)\,d\phi$. This is the hierarchical model.
+
+::: {#def-normal-hierarchical}
+## Normal hierarchical model
+With group estimates $y_j$ and known standard errors $\sigma_j$:
+$$
+y_j\mid\theta_j\sim\mathrm N(\theta_j,\sigma_j^2),\qquad\theta_j\mid\mu,\tau\sim\mathrm N(\mu,\tau^2),\qquad(\mu,\tau)\sim\pi(\mu,\tau),\qquad j=1,\dots,J.
+$$
+$\mu$ is the population mean and $\tau$ the **between-group standard deviation**, a **variance component**. **Complete pooling** is the limit $\tau=0$ ($\theta_j=\mu$ for all $j$); **no pooling** is the limit $\tau\to\infty$ (each $\theta_j$ estimated from $y_j$ alone).
+:::
+
+## Mathematical development {#sec-hier-development}
+
+### Shrinkage {#sec-hier-shrinkage}
+
+::: {#prp-shrinkage}
+## Conditional posterior of the group parameters
+In the normal hierarchical model, given $\mu$, $\tau$ and $y$, the $\theta_j$ are independent with
+$$
+\theta_j\mid\mu,\tau,y\sim\mathrm N\big((1-B_j)y_j+B_j\mu,\ (1-B_j)\sigma_j^2\big),\qquad B_j=\frac{\sigma_j^2}{\sigma_j^2+\tau^2}.
+$$
+:::
+
+::: {.proof}
+This is @prp-normal-known with prior $\mathrm N(\mu,\tau^2)$ and one observation of variance $\sigma_j^2$: the posterior precision is $1/\tau^2+1/\sigma_j^2$, and the posterior mean is $\frac{\mu/\tau^2+y_j/\sigma_j^2}{1/\tau^2+1/\sigma_j^2}=B_j\mu+(1-B_j)y_j$. The variance $\big(1/\tau^2+1/\sigma_j^2\big)^{-1}=\sigma_j^2\tau^2/(\sigma_j^2+\tau^2)=(1-B_j)\sigma_j^2$. Independence across $j$ follows from the factorisation of the joint density.
+:::
+
+The **shrinkage factor** $B_j\in(0,1)$ is the weight on the population mean. It is large when group $j$'s estimate is noisy ($\sigma_j$ large) or when groups are similar ($\tau$ small). Partial pooling then averages over the posterior uncertainty in $\tau$ and $\mu$, so the amount of shrinkage is itself estimated. This is the Bayesian counterpart of the James–Stein and empirical Bayes estimators, which dominate unpooled estimates in total squared error when $J\ge3$ [@efron1975data; @lindley1972bayes; @exr-dec-9].
+
+The marginal posterior of $(\mu,\tau)$ has the closed form derived in @prp-hier-propriety. With a normal prior on $\mu$ it gives an exact sampling algorithm: draw $\tau$ from its one-dimensional marginal posterior on a grid, then $\mu\mid\tau,y$ and $\theta\mid\mu,\tau,y$ from normal distributions [@gelman2013bda, Section 5.4]. This is `eight_schools_exact()`, which produces independent draws and is the reference against which we validate MCMC samplers.
+
+### Priors for variance components {#sec-hier-priors}
+
+The prior on $\tau$ matters most when $J$ is small or the $\sigma_j$ are large, which is when the data say little about between-group variation:
+
+- $\pi(\tau)\propto1/\tau$ gives an **improper posterior** (@prp-hier-propriety), and $\mathrm{InvGamma}(\epsilon,\epsilon)$ on $\tau^2$ is close to it and makes inferences depend on the arbitrary $\epsilon$ [@gelman2006prior].
+- A **uniform** prior on $\tau$ gives a proper posterior when $J\ge3$, but implies that very large $\tau$ is as plausible as moderate values.
+- **Half-normal, half-$t$ and half-Cauchy** priors with a scale set by substantive knowledge are recommended defaults [@gelman2006prior]. They have positive density at $\tau=0$, allowing complete pooling, and they decay at a rate that reflects what between-group variability is plausible.
+- **Penalised-complexity priors** formalise this as an exponential prior on $\tau$ [@simpson2017penalising] (@exr-prior-9).
+
+We use $\tau\sim\text{half-}\mathrm N(0,5)$ for the eight schools: differences in coaching effects between schools much larger than 10 points are implausible on the SAT scale. A sensitivity analysis is part of the worked example.
+
+### The funnel and the choice of parameterisation {#sec-hier-funnel}
+
+Consider the joint posterior of $(\log\tau,\theta_j)$ in the **centred parameterisation** $(\mu,\tau,\theta_1,\dots,\theta_J)$. By @prp-shrinkage, the conditional spread of $\theta_j$ is $\sqrt{(1-B_j)}\,\sigma_j$, which tends to $\tau$ as $\tau\to0$. In the prior, the scale of $\theta_j-\mu$ is exactly $\tau$. So as $\log\tau$ decreases, the region of plausible $\theta_j$ narrows exponentially: a **funnel**, like Neal's funnel (@sec-hmc-experiment). Samplers with a fixed step size cannot explore both the wide mouth and the narrow neck. HMC reports divergences in the neck (@sec-diag-worked), and Gibbs samplers get stuck there (@sec-gibbs-worked-hier).
+
+The **non-centred parameterisation** writes $\theta_j=\mu+\tau\eta_j$ with $\eta_j\sim\mathrm N(0,1)$ *a priori*, independently of $(\mu,\tau)$. In the prior, $(\log\tau,\eta)$ are independent, and there is no funnel. In the posterior:
+
+::: {#prp-noncentred-conditional}
+## Conditional posterior of the non-centred effects
+In the non-centred parameterisation, $\eta_j\mid\mu,\tau,y\sim\mathrm N\Big(\dfrac{\tau(y_j-\mu)/\sigma_j^2}{1+\tau^2/\sigma_j^2},\ \dfrac{1}{1+\tau^2/\sigma_j^2}\Big)$.
+:::
+
+::: {.proof}
+$y_j\mid\eta_j,\mu,\tau\sim\mathrm N(\mu+\tau\eta_j,\sigma_j^2)$ is a linear-Gaussian observation of $\eta_j$ with coefficient $\tau$; combined with the $\mathrm N(0,1)$ prior, the posterior precision is $1+\tau^2/\sigma_j^2$ and the mean follows as in @prp-normal-known.
+:::
+
+When the data are weak ($\tau^2\ll\sigma_j^2$ over most of the posterior), the conditional variance of $\eta_j$ is close to 1 whatever $\tau$ is, so the non-centred posterior has nearly constant scale and is easy to sample. When the data are strong ($\sigma_j\ll\tau$), the conditional variance of $\eta_j$ is about $\sigma_j^2/\tau^2$, which varies with $\tau$. The non-centred posterior then has its own funnel, and the centred parameterisation is better. @papaspiliopoulos2007general give a general theory of this trade-off. In practice:
+
+- **few groups, little data per group, or large measurement error** ⇒ non-centred;
+- **many observations per group with small standard errors** ⇒ centred;
+- **mixed situations** ⇒ non-centre some groups and centre others, or use interweaving strategies [@yu2011center].
+
+Both parameterisations define the *same model*: they are different coordinates for the same posterior, provided the change of variables is done correctly. The choice affects computation only.
+
+### Identifiability and weak identification {#sec-hier-identifiability}
+
+Hierarchical models raise identification issues of two kinds.
+
+- **Structural.** Adding a constant to all $\theta_j$ and subtracting it from $\mu$ leaves the likelihood unchanged in models where $\mu$ also appears elsewhere (e.g. an intercept plus group effects without a sum-to-zero constraint). The prior identifies the posterior, but the sampler sees a long ridge. Remedies: centre the group effects (non-centred parameterisation with $\mathbb E\eta=0$), or impose constraints.
+- **Weak identification of $\tau$.** With few groups, the data contain little information about $\tau$. In the eight schools, eight noisy estimates whose spread is consistent with pure measurement error leave $\tau$ poorly determined, and its posterior is influenced substantially by the prior. This is not a computational defect. It is what the data say, and the prior sensitivity analysis must show it.
+
+### Checking hierarchical models {#sec-hier-checking}
+
+Posterior predictive checks for hierarchical models replicate at the appropriate level. *Same groups, new observations* ($y^{\text{rep}}_j\sim\mathrm N(\theta_j,\sigma_j^2)$ with the posterior $\theta_j$) checks the measurement model. *New groups* (draw new $\theta^{\text{rep}}_j\sim\mathrm N(\mu,\tau^2)$, then new $y^{\text{rep}}_j$) checks the population model, for example whether the most extreme group is surprising under a normal population distribution. Test quantities include the largest and smallest $y_j$, the spread of the $y_j$, and the number of groups with estimates above a threshold.
+
+## Worked example 1: the eight schools {#sec-hier-worked-schools}
+
+@rubin1981estimation reports estimated effects of coaching programmes on SAT verbal scores in eight high schools, with standard errors: $y=(28,8,-3,7,-1,1,18,12)$ and $\sigma=(15,10,16,11,9,11,10,18)$.
+
+**Three levels of pooling.** No pooling estimates $\theta_j=y_j$. Complete pooling estimates the common effect by the precision-weighted mean, $\hat\mu=\sum_jy_j/\sigma_j^2\big/\sum_j1/\sigma_j^2$. Partial pooling uses the hierarchical posterior, computed exactly:
+
+```{r}
+#| label: hier-pooling
+set.seed(2101)
+ex <- eight_schools_exact(40000)
+y <- eight_schools$y; s <- eight_schools$sigma
+pooled <- sum(y / s^2) / sum(1 / s^2)
+tab <- data.frame(school = eight_schools$school, y = y, sigma = s,
+                  no_pooling = y, complete_pooling = round(pooled, 1),
+                  partial_mean = round(colMeans(ex[, 3:10]), 1),
+                  partial_sd = round(apply(ex[, 3:10], 2, sd), 1))
+tab
+c(mu_mean = mean(ex[, "mu"]), tau_mean = mean(ex[, "tau"]), tau_median = median(ex[, "tau"]),
+  P_tau_below_2 = mean(ex[, "tau"] < 2))
+```
+
+```{r}
+#| label: fig-hier-shrinkage
+#| fig-cap: "Eight schools: posterior means of the school effects under partial pooling, plotted against the between-school standard deviation $\\tau$ (conditional posterior means $\\mathbb E[\\theta_j\\mid\\tau,y]$, lines), with the no-pooling estimates at the right and the complete-pooling estimate at $\\tau=0$. The marginal posterior density of $\\tau$ is shaded at the bottom."
+#| fig-height: 4
+tau_grid <- seq(0.01, 30, length.out = 300)
+cond_means <- t(sapply(tau_grid, function(tau) {
+  v <- s^2 + tau^2; V <- 1 / (sum(1 / v) + 1 / 25); mu_hat <- V * sum(y / v)
+  B <- s^2 / (s^2 + tau^2); (1 - B) * y + B * mu_hat
+}))
+matplot(tau_grid, cond_means, type = "l", lty = 1, col = alpha_col(course_cols[["blue"]], 0.8), lwd = 1.3,
+        xlab = expression(tau), ylab = expression(E(theta[j] ~ "|" ~ tau, y)), ylim = c(-5, 30))
+text(30, y, eight_schools$school, pos = 4, cex = 0.7, xpd = TRUE)
+dens <- density(ex[, "tau"], from = 0, to = 30)
+polygon(c(dens$x, rev(dens$x)), c(-5 + 40 * dens$y, rep(-5, length(dens$x))), col = alpha_col(course_cols[["orange"]], 0.3), border = NA)
+```
+
+The posterior favours small $\tau$, since the spread of the $y_j$ is about what measurement error alone would produce, but it does not rule out moderate values. Consequently the partial-pooling estimates are pulled strongly towards the common mean. School A's estimate drops from 28 to about 6, with a posterior standard deviation of about 5. The data do not support the impression of a large effect in school A, which arose from a single noisy estimate.
+
+**Prior sensitivity for $\tau$.** Re-running the exact computation with half-normal scales of 2, 5 and 25:
+
+```{r}
+#| label: hier-tau-sensitivity
+set.seed(2102)
+sapply(c(2, 5, 25), function(sc) { d <- eight_schools_exact(20000, s_tau = sc)
+  c(prior_scale = sc, tau_median = median(d[, "tau"]), tau_q90 = quantile(d[, "tau"], 0.9, names = FALSE),
+    theta_A_mean = mean(d[, "theta[1]"]), theta_A_q90 = quantile(d[, "theta[1]"], 0.9, names = FALSE)) })
+```
+
+The posterior of $\tau$ moves substantially with the prior scale, as expected for a weakly identified variance component, and the estimate of school A's effect moves with it. A report should present this dependence rather than a single answer.
+
+**Sampling the same posterior by MCMC.** The exact draws validate the samplers of previous chapters, and also the Stan fits recorded in `stan/README.md`:
+
+```{r}
+#| label: hier-compare-samplers
+set.seed(2103)
+nc <- gibbs_hier_noncentered(y, s, 30000)[-(1:2000), ]
+ce <- gibbs_hier_centered(y, s, 30000)[-(1:2000), ]
+rbind(exact = c(mean(ex[, "tau"]), quantile(ex[, "tau"], c(0.05, 0.5))),
+      gibbs_noncentred = c(mean(nc[, "tau"]), quantile(nc[, "tau"], c(0.05, 0.5))),
+      gibbs_centred = c(mean(ce[, "tau"]), quantile(ce[, "tau"], c(0.05, 0.5))),
+      stan_centred_ref = c(3.50, 0.920, NA), stan_noncentred_ref = c(3.32, 0.238, NA)) |> round(3)
+```
+
+The non-centred samplers (Gibbs here, NUTS in the Stan reference) reproduce the exact 5% quantile of $\tau$. The centred samplers overestimate it. The centred Gibbs chain and Stan's centred fit both fail to reach the funnel's neck often enough, and the Stan fit flags this with divergences. The posterior *means* are much less affected than the lower tail, which is why tail diagnostics matter.
+
+**Posterior predictive check for new schools.** Is school A's large estimate surprising under the model? Replicate eight *new* schools and record the largest estimate:
+
+```{r}
+#| label: hier-ppc
+set.seed(2104)
+idx <- sample(nrow(ex), 4000)
+max_rep <- sapply(idx, function(k) max(rnorm(8, rnorm(8, ex[k, "mu"], ex[k, "tau"]), s)))
+c(observed_max = max(y), ppp = ppc_pvalue(max(y), max_rep))
+```
+
+The largest observed effect is unremarkable under the hierarchical model: values of 28 or more occur frequently when eight noisy estimates are drawn from the fitted population.
+
+## Worked example 2: overdispersed counts with a random effect {#sec-hier-worked-glmm}
+
+The Poisson regression of the warp-break data (@sec-reg-worked-poisson) was overdispersed. A **Poisson–lognormal** model adds a loom-level random effect, $\log\mu_i=x_i^\top\beta+u_i$ with $u_i\sim\mathrm N(0,\sigma_u^2)$, which is a hierarchical model with one group per observation. With nine looms per cell and moderately large counts, the data per random effect are weak relative to the population, so we use the non-centred parameterisation $u_i=\sigma_uz_i$ (`poisson_lognormal_model()`), with $\sigma_u\sim\text{half-}\mathrm N(0,1)$.
+
+```{r}
+#| label: hier-glmm
+Xw <- model.matrix(~ wool * tension, warpbreaks); yw <- warpbreaks$breaks
+m <- poisson_lognormal_model(Xw, yw, prior_sd = c(5, rep(2.5, 5)), s_u = 1)
+set.seed(2105)
+fits <- lapply(1:4, function(k) {
+  init <- c(log(mean(yw)), rep(0, 5), log(0.3), rnorm(nrow(Xw), 0, 0.1))
+  wu <- hmc_warmup(m$log_density, m$grad, init, 800, n_steps = 15)
+  hmc_sampler(m$log_density, m$grad, wu$position, 3000, wu$step_size, 15)
+})
+su <- sapply(fits, function(f) exp(f$draws[, 7]))
+b_woolB <- sapply(fits, function(f) f$draws[, 2])
+rbind(summarise_draws_basic(su, "sigma_u"), summarise_draws_basic(b_woolB, "woolB"))
+c(divergences = sum(sapply(fits, function(f) sum(f$divergent))))
+```
+
+```{r}
+#| label: hier-glmm-ppc
+cells <- interaction(warpbreaks$wool, warpbreaks$tension)
+disp <- function(z) mean(tapply(z, cells, function(v) var(v) / mean(v)))
+D <- do.call(rbind, lapply(fits, `[[`, "draws"))
+set.seed(2106)
+rep_disp <- replicate(2000, { d <- D[sample(nrow(D), 1), ]
+  u_new <- exp(d[7]) * rnorm(nrow(Xw))                      # new looms: fresh random effects
+  disp(rpois(nrow(Xw), exp(Xw %*% d[1:6] + u_new))) })
+c(observed = disp(yw), replicated_mean = mean(rep_disp), ppp = ppc_pvalue(disp(yw), rep_disp))
+```
+
+With loom-level variation modelled, the observed dispersion is consistent with replicated data, which the Poisson model could not achieve. The between-loom standard deviation of about 0.3 on the log scale corresponds to looms differing in breakage rate by a factor of roughly $e^{2\times0.3}\approx1.8$ between typical high and low looms (two standard deviations apart). The posterior interval for the wool effect is correspondingly wider than under the Poisson model, which is the honest consequence of acknowledging the extra variation.
+
+## R implementation {#sec-hier-r}
+
+```{r}
+#| file: R/models/hierarchical.R
+```
+
+The file provides the centred and non-centred eight-schools log densities with gradients (for HMC), the exact sampler, and the Poisson–lognormal model. All gradients are tested by finite differences, and the exact sampler is tested against the non-centred Gibbs sampler (`tests/testthat/test-gibbs.R`, `test-hmc.R`). The Stan versions are in `stan/eight_schools_centered.stan` and `stan/eight_schools_noncentered.stan`.
+
+## Computational experiment: centred or non-centred? {#sec-hier-experiment}
+
+We simulate eight-schools-like data sets with $J=8$, $\mu=0$, $\tau=3$, and standard errors $\sigma_j=c\cdot(15,10,16,11,9,11,10,18)/10$ for informativeness factors $c\in\{0.1,1,10\}$. Small $c$ means precise group estimates. Each data set is fitted with HMC in both parameterisations (four chains, dual-averaging warm-up). We record the bulk-ESS for $\tau$ per 1000 gradient evaluations and the number of divergences.
+
+```{r}
+#| label: hier-cnc-experiment
+set.seed(2107)
+base_sigma <- c(15, 10, 16, 11, 9, 11, 10, 18) / 10
+run_param <- function(model) {
+  chains <- lapply(1:4, function(k) {
+    init <- c(rnorm(1), rnorm(1), rnorm(model$dim - 2))
+    wu <- hmc_warmup(model$log_density, model$grad, init, 400, n_steps = 10)
+    hmc_sampler(model$log_density, model$grad, wu$position, 1000, wu$step_size, 10)
+  })
+  tau <- sapply(chains, function(ch) exp(ch$draws[, 2]))
+  c(ess_tau_per_1000_grads = 1000 * ess_bulk(tau) / (4 * 1400 * 10),
+    divergences = sum(sapply(chains, function(ch) sum(ch$divergent))))
+}
+res <- do.call(rbind, lapply(c(0.1, 1, 10), function(cfac) {
+  sig <- cfac * base_sigma
+  yy <- rnorm(8, rnorm(8, 0, 3), sig)
+  rbind(cbind(c = cfac, parameterisation = 1, t(run_param(eight_schools_centered(yy, sig, s_mu = 5, s_tau = 5)))),
+        cbind(c = cfac, parameterisation = 2, t(run_param(eight_schools_noncentered(yy, sig, s_mu = 5, s_tau = 5)))))
+}))
+res <- as.data.frame(res); res$parameterisation <- c("centred", "non-centred")[res$parameterisation]
+res$ess_tau_per_1000_grads <- round(res$ess_tau_per_1000_grads, 2); res
+```
+
+With precise group estimates ($c=0.1$, standard errors around 1 against $\tau=3$), the centred parameterisation is efficient and divergence-free, while the non-centred one struggles and diverges. With very noisy estimates ($c=10$) the situation reverses. In between ($c=1$, standard errors comparable to $\tau$), the centred sampler reports the larger ESS for $\tau$ but also many divergences. Its ESS is not trustworthy, because divergences signal a region of the posterior that is not being explored, and an ESS computed from a chain that misses part of the posterior can be large and wrong. Each row is a single simulated data set, so the numbers vary from run to run, but the pattern is the trade-off described in @sec-hier-funnel. The choice of parameterisation should be made for each model and data set, using divergences and tail-ESS as well as bulk-ESS.
+
+## Diagnostics and validation {#sec-hier-validation}
+
+- **Divergences and tail-ESS for variance components** are the key sampler diagnostics for hierarchical models. Check $\tau$ and $\log\tau$ specifically.
+- **Pairs plots** of $\log\tau$ against individual $\theta_j$ (centred) or $\eta_j$ (non-centred) show funnels directly.
+- **Exact or alternative computations**: compare against `eight_schools_exact()`, or against an independent implementation (Stan), as above.
+- **Simulation-based calibration** for $\tau$, which is sensitive to failure in the funnel (@exr-val-5).
+- **Prior sensitivity** for variance components, always.
+
+## Interpretation {#sec-hier-interpretation}
+
+The eight-schools analysis concludes that coaching effects are probably modest and similar across schools, that the apparently large effect in school A is largely noise, and that how similar the schools are (the value of $\tau$) is poorly determined by eight noisy estimates. These are substantive conclusions about what the data can and cannot support. The warp-break analysis shows a second use of hierarchical structure: modelling unexplained variation so that uncertainty statements about fixed effects are honest.
+
+## Limitations and common errors {#sec-hier-errors}
+
+- **Improper or near-improper priors on variance components** ($1/\tau$, $\mathrm{InvGamma}(\epsilon,\epsilon)$).
+- **Ignoring divergences** in hierarchical models: they usually indicate a funnel and biased estimates of $\tau$ and of the extreme $\theta_j$.
+- **Choosing the parameterisation by habit**. Centred is better for informative data, non-centred for weak data.
+- **Interpreting shrunken estimates as if they were unpooled**, or vice versa. State which estimates are reported.
+- **Treating $\tau$ as well estimated** when $J$ is small.
+- **Assuming normality of group effects without checking**: heavy-tailed or multimodal populations of groups (e.g. a few outlying schools) need different population distributions, and predictive checks at the group level can reveal the need.
+
+## Chapter summary {#sec-hier-summary}
+
+- Exchangeability motivates hierarchical models: group parameters drawn from a common population distribution with estimated parameters.
+- In the normal model, group estimates are shrunk towards the population mean by the factor $B_j=\sigma_j^2/(\sigma_j^2+\tau^2)$ (@prp-shrinkage), averaged over the posterior of $\tau$.
+- Priors on variance components must be proper (or proven to give proper posteriors) and should reflect plausible scales. Half-normal, half-$t$ and PC priors are good defaults.
+- Hierarchical posteriors have funnel geometry. The non-centred parameterisation removes it when data are weak, and the centred one is better when data are strong (@prp-noncentred-conditional).
+- Weak identification of $\tau$ is a property of the data, revealed by prior sensitivity, not a computational failure.
+- Random effects model unexplained variation (e.g. overdispersion), making inferences about fixed effects honest.
+
+## Exercises {#sec-hier-exercises}
+
+::: {#exr-hier-1}
+**[Mathematical ★]** Show that, given $\tau$, the posterior mean of $\mu$ in the normal hierarchical model with a flat prior on $\mu$ is the precision-weighted mean $\sum_jy_j/(\sigma_j^2+\tau^2)\big/\sum_j1/(\sigma_j^2+\tau^2)$, and interpret its limits as $\tau\to0$ and $\tau\to\infty$.
+:::
+
+::: {#exr-hier-2}
+**[Proof ★★]** Show that the marginal posterior variance of $\theta_j$ satisfies $\operatorname{Var}(\theta_j\mid y)=\mathbb E[(1-B_j)\sigma_j^2\mid y]+\operatorname{Var}((1-B_j)y_j+B_j\mu\mid y)$, and explain why it can exceed $(1-\mathbb E[B_j\mid y])\sigma_j^2$.
+:::
+
+::: {#exr-hier-3}
+**[R ★★]** Write the Gibbs sampler for the normal hierarchical model with a $\mathrm{Gamma}$ prior on the *precision* $1/\tau^2$ (fully conjugate full conditionals), and compare the posterior of $\tau$ for the eight schools with that under the half-normal prior. What does the Gamma prior imply about $\tau$ near zero?
+:::
+
+::: {#exr-hier-4}
+**[Simulation ★★]** Using `eight_schools_exact()`, compute the frequentist mean squared error of the partial-pooling posterior means and of the no-pooling estimates $y_j$, summed over the eight schools, when true effects are drawn from $\mathrm N(8,3^2)$ and $y_j\sim\mathrm N(\theta_j,\sigma_j^2)$ with the real $\sigma_j$. Relate the result to @exr-dec-9.
+:::
+
+::: {#exr-hier-5}
+**[Diagnostics ★★]** Fit the centred eight-schools model with HMC, record the iterations with divergences, and plot $\log\tau$ against $\theta_1$ with divergent iterations highlighted. Describe where the divergences occur.
+:::
+
+::: {#exr-hier-6}
+**[R ★★★]** Extend the eight-schools model to a varying-intercept regression: student-level data $y_{ij}\sim\mathrm N(\alpha_j+\beta x_{ij},\sigma^2)$ with $\alpha_j\sim\mathrm N(\mu,\tau^2)$. Simulate data with $J=20$ groups of sizes 2 to 50, write the log density and gradient in the non-centred parameterisation, and fit by HMC. For which groups is shrinkage strongest?
+:::
+
+::: {#exr-hier-7}
+**[Critique ★★]** A meta-analysis of five trials reports "the between-study heterogeneity was zero ($\hat\tau=0$), so a fixed-effect model was used". Comment from a Bayesian perspective.
+:::
+
+## Further reading {#sec-hier-reading}
+
+- @gelman2013bda, Chapter 5, and @gelman2006data: hierarchical models in applied work.
+- @rubin1981estimation: the original eight-schools analysis.
+- @lindley1972bayes and @efron1975data: hierarchical linear models and Stein's estimator.
+- @gelman2006prior: priors for variance parameters.
+- @papaspiliopoulos2007general, @gelfand1995efficient and @yu2011center: parameterisation of hierarchical models.
+- @betancourt2015hamiltonian: HMC and the funnel geometry of hierarchical models.
+- @bernardo1994theory, Chapter 4: exchangeability and de Finetti's theorem.
+
+## Solutions {#sec-hier-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-hier-1
+Given $\tau$, $y_j\mid\mu,\tau\sim\mathrm N(\mu,v_j)$ independently with $v_j=\sigma_j^2+\tau^2$, so with a flat prior the posterior of $\mu$ is normal with mean $\sum_jy_j/v_j\big/\sum_j1/v_j$. As $\tau\to0$ this tends to the complete-pooling estimate $\sum y_j/\sigma_j^2/\sum1/\sigma_j^2$. As $\tau\to\infty$ the weights become equal and it tends to the unweighted mean $\bar y$: when groups differ a lot, precise groups are no more informative about the population mean than imprecise ones.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-hier-2
+This is the law of total variance (@thm-total-variance) conditioning on $(\mu,\tau)$, with the conditional mean and variance from @prp-shrinkage. The second term is non-negative and captures uncertainty about the amount of shrinkage and about $\mu$. It can be substantial when $\tau$ is poorly determined, so the marginal posterior variance can exceed the variance computed at a plug-in shrinkage factor.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-hier-3
+With $1/\tau^2\sim\mathrm{Gamma}(a,b)$, the full conditional is $1/\tau^2\mid\theta,\mu\sim\mathrm{Gamma}\big(a+\frac J2,\ b+\frac12\sum(\theta_j-\mu)^2\big)$. The induced density on $\tau$ is $\propto\tau^{-2a-1}e^{-b/\tau^2}$, which is zero at $\tau=0$ and decays slowly for large $\tau$. Small $\tau$ is ruled out a priori, so the posterior of $\tau$ is pushed away from zero compared with the half-normal prior, and shrinkage is weaker. With small $a,b$ the prior is close to the improper $1/\tau$, and results become sensitive to $(a,b)$ [@gelman2006prior].
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-hier-4
+Repeat many times: draw $\theta_j\sim\mathrm N(8,9)$ and $y_j\sim\mathrm N(\theta_j,\sigma_j^2)$, compute the posterior means with `eight_schools_exact(..., y = y)`, and accumulate $\sum_j(\hat\theta_j-\theta_j)^2$. No pooling has expected total squared error $\sum_j\sigma_j^2=1328$. Partial pooling achieves a much smaller total error, because with $\tau=3$ and $\sigma_j\approx10$–$18$ the optimal estimates are shrunk heavily. This is Stein's phenomenon in practice.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-hier-5
+Use `hmc_sampler()` on `eight_schools_centered()` and plot `draws[, 2]` (log tau) against `draws[, 3]` (theta[1]), highlighting `divergent`. The draws form a funnel: wide spread of $\theta_1$ at large $\log\tau$, narrow at small $\log\tau$. Divergences cluster at the bottom of the funnel, where the curvature is highest, and the region below them is sparsely sampled.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-hier-6
+Parameters $(\mu,\log\tau,\beta,\log\sigma,\eta_1,\dots,\eta_J)$ with $\alpha_j=\mu+\tau\eta_j$. The log density is $\sum_{ij}\log\mathrm N(y_{ij}\mid\alpha_j+\beta x_{ij},\sigma^2)+\sum_j\log\mathrm N(\eta_j\mid0,1)$ plus priors and the log-Jacobians of $\tau$ and $\sigma$. Shrinkage of $\hat\alpha_j$ towards $\mu$ is strongest for the smallest groups, where $\sigma^2/n_j$ is largest relative to $\tau^2$, and weakest for groups of size 50. For large groups the non-centred parameterisation can be inefficient; a mixed parameterisation (centring large groups) helps.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-hier-7
+A point estimate $\hat\tau=0$ from five studies is weak evidence of homogeneity: the likelihood for $\tau$ is typically flat near zero with a long right tail, so values of $\tau$ large enough to matter are still plausible. Conditioning on $\tau=0$ ignores this uncertainty and produces overconfident intervals for the pooled effect. A Bayesian random-effects analysis with a weakly informative prior on $\tau$ (e.g. half-normal on a plausible scale) averages over $\tau$'s uncertainty, and its prior sensitivity analysis shows how much the conclusions depend on assumptions about heterogeneity.
+:::

@@ -1,0 +1,78 @@
+# Checkpoint II: Bayesian Statistics {#sec-checkpoint-2 .unnumbered}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+This checkpoint covers Chapters 4–8. It is designed as a take-home assessment of about one working day. Problems 1–3 are mathematical, problems 4–5 computational, and problem 6 is a short written critique. Solutions are given at the end; attempt every problem before reading them.
+
+## Problems {#sec-cp2-problems}
+
+**Problem 1 (conjugate analysis, ★★).** A reliability engineer tests $n=15$ components. Eleven fail at times (hours) $t_1,\dots,t_{11}$ with $\sum t_i=4620$. The remaining four are still working when the test stops at 800 hours. Assume exponential lifetimes with rate $\lambda$ and a $\mathrm{Gamma}(2,500)$ prior.
+(a) Derive the posterior of $\lambda$ (@sec-conj-gamma-exponential).
+(b) Compute the posterior mean and a 90% equal-tailed interval for the mean lifetime $1/\lambda$.
+(c) Derive the posterior predictive probability that a new component survives 1000 hours.
+
+**Problem 2 (decision theory, ★★).** A regulator must decide whether a drug's adverse-event probability $\theta$ exceeds 0.02. Approving a drug with $\theta>0.02$ costs 10 units; rejecting a drug with $\theta\le0.02$ costs 1 unit. With 2 events among 400 patients and a $\mathrm{Beta}(1,99)$ prior, what decision minimises posterior expected loss? What is the largest number of events among 400 patients for which the drug would be approved?
+
+**Problem 3 (propriety and priors, ★★★).** For $y_i\mid\lambda\sim\mathrm{Poisson}(\lambda)$, $i=1,\dots,n$, consider the improper priors $\pi(\lambda)\propto\lambda^{c}$, $c\in\mathbb R$. For which $c$ is the posterior proper when (a) $\sum y_i>0$, (b) all $y_i=0$? Relate your answer to the Jeffreys prior ($c=-\frac12$) and to the "scale-invariant" prior $c=-1$.
+
+**Problem 4 (prior predictive analysis, ★★).** You will model the number of hospital admissions per day ($y_t$) in a small hospital with a Poisson model and a log-normal prior $\log\lambda\sim\mathrm N(m,s^2)$. A clinician says that typical days have 10–30 admissions and that more than 100 would be extraordinary. Choose $(m,s)$, verify your choice by prior predictive simulation, and report the prior predictive probability of a day with more than 100 admissions.
+
+**Problem 5 (prediction and checking, ★★★).** Using the `warpbreaks` data (number of warp breaks per loom for two wool types and three tension levels; [@sec-r-computing] shows how to load built-in data), fit a Gamma–Poisson model separately to each of the six wool × tension cells with a $\mathrm{Gamma}(2,0.1)$ prior. Carry out posterior predictive checks of the dispersion in each cell, and report a table of ppp-values. Which cells show evidence of overdispersion? What would you do next?
+
+**Problem 6 (critique, ★★).** Read the following summary and list every problem you can find:
+
+> "We used a non-informative uniform prior on the logistic regression coefficients. The posterior mode of the treatment effect was 0.8 (95% HPD interval 0.1 to 1.6) and the posterior predictive p-value was 0.48, so the model fits well. The Bayes factor for the treatment effect was 0.7, so there is no evidence of an effect, consistent with the frequentist p-value of 0.03."
+
+## Solutions {#sec-cp2-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 1
+(a) The likelihood is $\lambda^{11}e^{-\lambda T}$ with total time on test $T=4620+4\times800=7820$. The posterior is $\mathrm{Gamma}(2+11,\ 500+7820)=\mathrm{Gamma}(13,8320)$.
+(b) $1/\lambda\sim\mathrm{InvGamma}(13,8320)$, with mean $8320/12\approx693$ hours. A 90% interval is $[1/q_{0.95},1/q_{0.05}]$ with $q$ the Gamma quantiles: `1 / qgamma(c(0.95, 0.05), 13, 8320)` gives roughly $(430,1080)$ hours.
+(c) $\mathbb P(\tilde y>1000\mid y)=\mathbb E[e^{-1000\lambda}\mid y]=\big(\frac{8320}{8320+1000}\big)^{13}\approx0.22$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 2
+The posterior is $\mathrm{Beta}(3,497)$. Approving has expected loss $10\,\mathbb P(\theta>0.02\mid y)$ and rejecting has $1\cdot\mathbb P(\theta\le0.02\mid y)$. By @prp-bayes-test, approve iff $\mathbb P(\theta>0.02\mid y)<1/11\approx0.091$. Here `pbeta(0.02, 3, 497, lower.tail = FALSE)` $\approx0.003$, so approve. Repeating for $y=0,1,2,\dots$, the largest $y$ with $\mathbb P(\theta>0.02\mid y)<1/11$ is $y=5$ (probability about 0.066); for $y=6$ it is about 0.13.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 3
+The posterior kernel is $\lambda^{s+c}e^{-n\lambda}$ with $s=\sum y_i$. It is integrable on $(0,\infty)$ iff $s+c>-1$ (behaviour at 0; the exponential handles $\infty$). (a) With $s\ge1$: proper iff $c>-1-s$, so always for $c\ge-1$, including both the Jeffreys and the scale-invariant priors. (b) With $s=0$: proper iff $c>-1$. The Jeffreys prior is fine, but $c=-1$ gives an improper posterior. A prior that is harmless for typical data can fail for extreme data, which is why propriety must be checked for every data set that could occur.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 4
+Matching "typical 10–30" to a central 80% interval of $\lambda$ gives $m=\log\sqrt{10\cdot30}\approx2.85$ and $s=(\log30-\log10)/(2\times1.28)\approx0.43$. Then
+```{r}
+#| eval: false
+set.seed(1)
+lam <- exp(rnorm(1e5, 2.85, 0.43)); yy <- rpois(1e5, lam)
+quantile(yy, c(0.05, 0.5, 0.95)); mean(yy > 100)
+```
+gives a median of about 17, a 90% prior predictive range of about 7–37, and $\mathbb P(y>100)$ well below $10^{-3}$, consistent with "extraordinary". If the clinician considers 50 admissions possible but rare, check that its prior predictive probability is small but not negligible, and widen $s$ if it is not.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 5
+```{r}
+#| eval: false
+set.seed(2)
+res <- sapply(split(warpbreaks$breaks, interaction(warpbreaks$wool, warpbreaks$tension)), function(y) {
+  pp <- gamma_poisson_update(y, 2, 0.1); lam <- rgamma(4000, pp$a, pp$b)
+  t_rep <- sapply(lam, function(l) { z <- rpois(length(y), l); var(z) / mean(z) })
+  c(dispersion = var(y) / mean(y), ppp = mean(t_rep >= var(y) / mean(y)))
+})
+round(res, 3)
+```
+Five of the six cells (all except wool B at high tension) have dispersion ratios well above 1 with ppp-values near 0; wool A at low tension is the most extreme (ratio about 7), so the counts vary more between looms than a Poisson model allows. Next steps: a negative-binomial or hierarchical model with loom-level variation (@sec-hierarchical), fitted jointly across cells with wool and tension effects (@sec-regression).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 6
+(i) A uniform prior on logistic coefficients is improper, and with separation the posterior may be improper too; it is also strongly informative on the probability scale (@exm-logistic-prior-predictive). (ii) The posterior mode is reported as the estimate, which is not invariant and is unrepresentative of a skewed posterior; report the mean or median and intervals. (iii) A ppp-value of 0.48 for an unspecified (probably omnibus) discrepancy says little about fit (@sec-pred-ppp-properties). (iv) A Bayes factor requires a *proper* prior under the alternative; with a uniform prior it is undefined or arbitrary (Lindley, @prp-lindley). (v) "No evidence of an effect" does not follow from $B_{10}=0.7$, which is nearly neutral. (vi) The posterior interval excludes 0, and the p-value of 0.03 and the Bayes factor answer different questions; calling them "consistent" confuses them. (vii) There is no sensitivity analysis or prior predictive check.
+:::

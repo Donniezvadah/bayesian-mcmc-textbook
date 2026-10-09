@@ -1,0 +1,414 @@
+# Gibbs Sampling {#sec-gibbs}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. derive full conditional distributions by kernel recognition, and recognise conditional conjugacy;
+2. prove that Gibbs updates leave the posterior invariant, and that full conditionals determine the joint distribution under a positivity condition (Brook's lemma);
+3. implement systematic-scan, random-scan, blocked and Metropolis-within-Gibbs samplers in R;
+4. explain why strong posterior dependence slows Gibbs sampling, quantify it for the bivariate normal, and use blocking, reparameterisation and Rao–Blackwellisation to improve efficiency;
+5. apply Gibbs sampling to a hierarchical model and compare centred and non-centred parameterisations;
+6. recognise when Gibbs sampling is unavailable or unsafe, including improper posteriors with proper full conditionals.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-conjugate (conjugate updates), @sec-why-building (invariance of full-conditional updates, mixtures and compositions of kernels), @sec-mh (Metropolis–Hastings), @sec-prior-improper (posterior propriety).
+:::
+
+## Motivation {#sec-gibbs-motivation}
+
+Many Bayesian models are built from conjugate pieces: normal likelihoods with normal priors on means, gamma priors on precisions, Dirichlet priors on probabilities. Their joint posteriors are not of standard form, but the distribution of each block of parameters *given all the others* often is. Gibbs sampling [@geman1984stochastic; @gelfand1990sampling] exploits this. It cycles through the blocks, drawing each from its full conditional distribution. There is no proposal to tune and nothing is ever rejected. The method made Bayesian computation practical for hierarchical models in the 1990s [@casella1992explaining] and remains the engine of software such as BUGS, JAGS and NIMBLE [@lunn2000winbugs; @devalpine2017programming]. Its weakness is equally important to understand: when blocks are strongly dependent in the posterior, a sampler that moves one block at a time crawls.
+
+## Definitions and notation {#sec-gibbs-definitions}
+
+Partition the parameter as $\theta=(\theta_1,\dots,\theta_K)$, where each block $\theta_k$ may be a scalar or a vector, and write $\theta_{-k}$ for all blocks except the $k$-th.
+
+::: {#def-full-conditional}
+## Full conditional distribution
+The **full conditional distribution** of block $k$ is $\pi(\theta_k\mid\theta_{-k},y)$. Since it is proportional to the joint posterior as a function of $\theta_k$,
+$$
+\pi(\theta_k\mid\theta_{-k},y)\propto p(y\mid\theta)\,\pi(\theta)\quad\text{(as a function of }\theta_k\text{)},
+$$ {#eq-full-conditional}
+it is obtained by keeping only the factors of likelihood × prior that involve $\theta_k$ and normalising.
+:::
+
+::: {#def-gibbs-sampler}
+## Gibbs samplers
+A **systematic-scan** Gibbs sampler updates the blocks in a fixed order: given $\theta^{(t)}$, for $k=1,\dots,K$ draw
+$$
+\theta_k^{(t+1)}\sim\pi\big(\theta_k\mid\theta_1^{(t+1)},\dots,\theta_{k-1}^{(t+1)},\theta_{k+1}^{(t)},\dots,\theta_K^{(t)},y\big).
+$$
+A **random-scan** sampler picks one block uniformly at random at each step and updates it. A **blocked** sampler groups correlated parameters into a single block that is updated jointly. In a **Metropolis-within-Gibbs** sampler, some blocks are updated by a Metropolis–Hastings step targeting their full conditional instead of by an exact draw.
+:::
+
+## Mathematical development {#sec-gibbs-development}
+
+### Invariance {#sec-gibbs-invariance}
+
+By @prp-gibbs-invariance, drawing block $k$ from its full conditional is a $\pi$-reversible kernel $P_k$. By @prp-mixture-composition, the systematic scan $P_1P_2\cdots P_K$ is $\pi$-invariant, and the random scan $\frac1K\sum_kP_k$ is $\pi$-reversible. If some block is updated by a Metropolis–Hastings step targeting its full conditional, that step is also $\pi$-reversible on the joint space (it is an MH kernel for $\pi(\theta_k\mid\theta_{-k})$ that leaves $\theta_{-k}$ fixed), so Metropolis-within-Gibbs is valid for the same reason.
+
+The Gibbs update can be viewed as a Metropolis–Hastings step whose proposal is the full conditional itself. The Hastings ratio is then
+$$
+\frac{\pi(\theta_k',\theta_{-k})\,\pi(\theta_k\mid\theta_{-k})}{\pi(\theta_k,\theta_{-k})\,\pi(\theta_k'\mid\theta_{-k})}=\frac{\pi(\theta_{-k})}{\pi(\theta_{-k})}=1,
+$$
+so every proposal is accepted [@robert2004monte, Section 10.2].
+
+### Do the full conditionals determine the joint? {#sec-gibbs-brook}
+
+A Gibbs sampler uses only the full conditionals. Could two different joint distributions have the same conditionals? Under a positivity condition, no.
+
+::: {#prp-brook}
+## Brook's lemma
+Let $p$ be a joint density on a product space with $p(\theta)>0$ everywhere. For any two points $\theta,\eta$,
+$$
+\frac{p(\theta)}{p(\eta)}=\prod_{k=1}^K\frac{p(\theta_k\mid\theta_1,\dots,\theta_{k-1},\eta_{k+1},\dots,\eta_K)}{p(\eta_k\mid\theta_1,\dots,\theta_{k-1},\eta_{k+1},\dots,\eta_K)}.
+$$
+Hence the full conditionals determine $p$ up to its normalising constant.
+:::
+
+::: {.proof}
+Let $z^{(k)}=(\theta_1,\dots,\theta_k,\eta_{k+1},\dots,\eta_K)$, so $z^{(0)}=\eta$ and $z^{(K)}=\theta$. Consecutive points differ only in block $k$, so
+$\frac{p(z^{(k)})}{p(z^{(k-1)})}=\frac{p(\theta_k\mid z^{(k)}_{-k})\,p(z^{(k)}_{-k})}{p(\eta_k\mid z^{(k)}_{-k})\,p(z^{(k)}_{-k})}$, using $z^{(k)}_{-k}=z^{(k-1)}_{-k}$. All densities are positive, so the ratios are defined, and the telescoping product $\prod_kp(z^{(k)})/p(z^{(k-1)})=p(\theta)/p(\eta)$ gives the identity. Fixing $\eta$ determines $p(\theta)\propto$ the right-hand side for every $\theta$.
+:::
+
+The positivity condition matters: without it, the conditionals can fail to determine the joint, and the Gibbs sampler can be reducible. A standard example is a target supported on two disjoint squares that touch only at a corner (@exr-gibbs-3). The lemma underlies the Hammersley–Clifford theorem for Markov random fields [@robert2004monte, Chapter 9].
+
+A more alarming fact runs the other way. **A set of proper full conditionals need not correspond to any proper joint distribution.** The Gibbs sampler then runs happily, producing output from a "posterior" that does not exist [@hobert1996effect]. The experiment below shows this for a hierarchical model with an improper prior.
+
+### Conditional conjugacy {#sec-gibbs-conjugacy}
+
+A model is **conditionally conjugate** if each full conditional belongs to a standard family. The semi-conjugate normal model is the canonical example.
+
+::: {#prp-semiconjugate-normal}
+## Full conditionals of the semi-conjugate normal model
+Let $y_i\mid\mu,\sigma^2\stackrel{\text{iid}}\sim\mathrm N(\mu,\sigma^2)$, $i=1,\dots,n$, with *independent* priors $\mu\sim\mathrm N(m_0,v_0)$ and $\sigma^2\sim\mathrm{InvGamma}(a_0,b_0)$. Then
+$$
+\mu\mid\sigma^2,y\sim\mathrm N\Big(\frac{m_0/v_0+n\bar y/\sigma^2}{1/v_0+n/\sigma^2},\ \frac{1}{1/v_0+n/\sigma^2}\Big),\qquad
+\sigma^2\mid\mu,y\sim\mathrm{InvGamma}\Big(a_0+\frac n2,\ b_0+\frac12\sum_i(y_i-\mu)^2\Big).
+$$
+The joint posterior is not of standard form.
+:::
+
+::: {.proof}
+For $\mu$, @eq-full-conditional keeps the likelihood and the prior on $\mu$, which is exactly the known-variance model of @prp-normal-known with $\sigma^2$ fixed. For $\sigma^2$, it keeps $(\sigma^2)^{-n/2}\exp\{-\sum(y_i-\mu)^2/(2\sigma^2)\}\cdot(\sigma^2)^{-a_0-1}e^{-b_0/\sigma^2}$, an inverse-gamma kernel. The joint posterior is proportional to $\mathrm N(\mu\mid m_0,v_0)\,\mathrm{InvGamma}(\sigma^2\mid a_0,b_0)\prod_i\mathrm N(y_i\mid\mu,\sigma^2)$. Integrating out $\sigma^2$ gives a marginal for $\mu$ proportional to a normal density times a Student-$t$ kernel, which is not a standard family.
+:::
+
+The same recognition technique gives the full conditionals of normal hierarchical models (implemented in `gibbs_hier_centered()`), of linear regression with independent priors (`gibbs_linear_regression()`, @sec-regression) and of many other models.
+
+### Dependence and the speed of Gibbs sampling {#sec-gibbs-mixing}
+
+Gibbs sampling moves parallel to the coordinate axes. When the posterior is concentrated along a diagonal, each axis-parallel move is short, and the chain needs many steps to traverse the distribution. For the bivariate normal this is exact.
+
+::: {#prp-gibbs-bvn}
+## Gibbs sampling for a bivariate normal
+For $(x_1,x_2)\sim\mathrm N\big(0,\begin{pmatrix}1&\rho\\\rho&1\end{pmatrix}\big)$, the systematic-scan Gibbs sampler with full conditionals $x_1\mid x_2\sim\mathrm N(\rho x_2,1-\rho^2)$ and $x_2\mid x_1\sim\mathrm N(\rho x_1,1-\rho^2)$ produces an $x_1$-sequence that is a stationary AR(1) process with coefficient $\rho^2$. Consequently the lag-$k$ autocorrelation of $x_1$ is $\rho^{2k}$ and its integrated autocorrelation time is $\tau=(1+\rho^2)/(1-\rho^2)$.
+:::
+
+::: {.proof}
+In one sweep, $x_2'=\rho x_1+\sqrt{1-\rho^2}\,e_2$ and $x_1''=\rho x_2'+\sqrt{1-\rho^2}\,e_1$ with independent standard normal $e_1,e_2$. Hence $x_1''=\rho^2x_1+\rho\sqrt{1-\rho^2}\,e_2+\sqrt{1-\rho^2}\,e_1$, an AR(1) recursion with coefficient $\rho^2$ and innovation variance $(1-\rho^2)(1+\rho^2)=1-\rho^4$, whose stationary variance is $(1-\rho^4)/(1-\rho^4)=1$. @exm-ar1 gives $\tau$.
+:::
+
+With $\rho=0.99$, $\tau\approx99.5$, so the sampler is about a hundred times less efficient than independent sampling. In general, for a two-block Gibbs sampler, the autocorrelation of each block's sequence is governed by the *maximal correlation* between the blocks in the posterior [@liu1994covariance]. Three remedies follow:
+
+1. **Blocking.** Update strongly dependent parameters together. In the bivariate normal, updating $(x_1,x_2)$ jointly gives independent draws. Blocking never makes the sampler worse in the sense of the maximal correlation, and it can help dramatically [@liu1994covariance; @roberts1997updating].
+2. **Reparameterisation.** Transform to less dependent coordinates. For hierarchical models this is the choice between centred and non-centred parameterisations [@gelfand1995efficient; @papaspiliopoulos2007general], illustrated below and in @sec-hierarchical.
+3. **Different samplers.** Gradient-based methods (@sec-hmc) move along the posterior's directions of variation rather than along coordinate axes.
+
+### Rao–Blackwellisation {#sec-gibbs-rao-blackwell}
+
+The Gibbs sampler computes the full conditional at every step. This information can be used for estimation. To estimate $\mathbb E[f(\theta_1)\mid y]$, average the conditional expectations instead of the raw draws:
+$$
+\hat\mu_{\mathrm{RB}}=\frac1N\sum_{t=1}^N\mathbb E\big[f(\theta_1)\mid\theta_{-1}^{(t)},y\big].
+$$
+Both estimators are consistent. For a stationary two-block sampler, @liu1994covariance showed that the Rao–Blackwellised estimator has variance no larger than the raw average. Rao–Blackwellisation also gives smooth density estimates: averaging the full-conditional *densities* $\pi(\theta_1\mid\theta_{-1}^{(t)},y)$ over draws estimates the marginal posterior density of $\theta_1$ without kernel smoothing [@gelfand1990sampling].
+
+### When Gibbs sampling is not directly available {#sec-gibbs-unavailable}
+
+Full conditionals are often non-standard: a variance with a half-normal prior, a logistic regression coefficient, a parameter entering the likelihood non-linearly. Options include:
+
+- **Metropolis-within-Gibbs**: update the awkward block with an MH step targeting its full conditional, as `gibbs_hier_centered()` does for $\tau$;
+- **slice sampling or adaptive rejection sampling** of the univariate full conditional [@neal2003slice; @gilks1992adaptive] (@sec-specialized);
+- **data augmentation**: introduce latent variables that make all full conditionals standard [@tanner1987calculation; @vandyk2001art]. The Albert–Chib probit sampler [@albert1993bayesian] and the Pólya–Gamma logistic sampler [@polson2013bayesian] are the classic examples (@sec-specialized);
+- **parameter expansion**: introduce redundant parameters that make conditionals conjugate and often also improve mixing, as in the non-centred sampler below.
+
+## Worked example 1: the semi-conjugate normal model {#sec-gibbs-worked-normal}
+
+We apply @prp-semiconjugate-normal to Student's sleep differences (@sec-conj-sleep) with priors $\mu\sim\mathrm N(0,10^2)$ and $\sigma^2\sim\mathrm{InvGamma}(2,2)$. Because there are only two parameters, we can check the sampler against a two-dimensional grid.
+
+```{r}
+#| label: gibbs-normal-run
+d <- with(sleep, extra[group == 2] - extra[group == 1])
+set.seed(1301)
+chains <- lapply(c(-3, 0, 3, 6), function(m) gibbs_normal(d, 5000, m0 = 0, v0 = 100, a0 = 2, b0 = 2,
+                                                          initial = c(mu = m, sigma2 = 4)))
+mu_draws <- sapply(chains, function(ch) ch[1001:5000, "mu"])
+s2_draws <- sapply(chains, function(ch) ch[1001:5000, "sigma2"])
+rbind(summarise_draws_basic(mu_draws, "mu"), summarise_draws_basic(s2_draws, "sigma2"))
+```
+
+```{r}
+#| label: gibbs-normal-grid
+mu_g <- seq(-2, 5, length.out = 401); s2_g <- seq(0.05, 15, length.out = 801)
+lj <- outer(mu_g, s2_g, Vectorize(function(m, s2) sum(dnorm(d, m, sqrt(s2), log = TRUE)) +
+  dnorm(m, 0, 10, log = TRUE) + dinvgamma_log(s2, 2, 2)))
+J <- exp(lj - max(lj)); J <- J / sum(J)
+grid_means <- c(mu = sum(J * mu_g), sigma2 = sum(t(J) * s2_g))
+rbind(grid = grid_means, gibbs = c(mean(mu_draws), mean(s2_draws)),
+      z = (c(mean(mu_draws), mean(s2_draws)) - grid_means) / c(mcse_mean(mu_draws), mcse_mean(s2_draws)))
+```
+
+The Gibbs estimates agree with the grid within Monte Carlo error. The bulk ESS is close to the number of retained draws, because $\mu$ and $\sigma^2$ are nearly independent in this posterior and the two-block sampler is almost as good as independent sampling.
+
+## Worked example 2: a hierarchical model, centred and non-centred {#sec-gibbs-worked-hier}
+
+For the eight-schools model of `R/models/hierarchical.R`, with $\mu\sim\mathrm N(0,5^2)$ and $\tau\sim\text{half-}\mathrm N(0,5)$, we compare two valid Gibbs samplers for the *same* posterior.
+
+**Centred parameterisation** $(\mu,\tau,\theta_1,\dots,\theta_8)$. The full conditionals of $\theta_j$ and $\mu$ are normal: $\theta_j\mid\mu,\tau,y\sim\mathrm N\big(\frac{y_j/\sigma_j^2+\mu/\tau^2}{1/\sigma_j^2+1/\tau^2},\frac{1}{1/\sigma_j^2+1/\tau^2}\big)$, and $\mu\mid\theta,\tau\sim\mathrm N\big(\frac{\sum_j\theta_j/\tau^2}{J/\tau^2+1/25},\frac{1}{J/\tau^2+1/25}\big)$. The full conditional of $\tau$ is non-standard,
+$\pi(\tau\mid\theta,\mu)\propto\tau^{-J}\exp\{-\sum_j(\theta_j-\mu)^2/(2\tau^2)-\tau^2/50\}$, so $\log\tau$ is updated by a random-walk Metropolis step (Metropolis-within-Gibbs).
+
+**Non-centred parameterisation with parameter expansion** $(\mu,\tau,\eta_1,\dots,\eta_8)$, $\theta_j=\mu+\tau\eta_j$, $\eta_j\sim\mathrm N(0,1)$. Letting $\tau$ range over $\mathbb R$ with prior $\mathrm N(0,5^2)$ gives $\lvert\tau\rvert$ exactly the half-normal prior, and makes *every* full conditional normal (derived in the comments of `gibbs_hier_noncentered()`). Draws of $\theta$, $\mu$ and $\lvert\tau\rvert$ follow the same posterior as in the centred sampler.
+
+```{r}
+#| label: gibbs-hier-run
+y <- eight_schools$y; s <- eight_schools$sigma
+set.seed(1302)
+runs_c <- lapply(1:4, function(k) gibbs_hier_centered(y, s, 6000, initial = list(mu = rnorm(1, 0, 5), tau = exp(rnorm(1)))))
+runs_n <- lapply(1:4, function(k) gibbs_hier_noncentered(y, s, 6000, initial = list(mu = rnorm(1, 0, 5), tau = exp(rnorm(1)))))
+keep <- 1001:6000
+pick <- function(runs, v) sapply(runs, function(r) r[keep, v])
+comp <- rbind(
+  centred_tau = summarise_draws_basic(pick(runs_c, "tau"), "tau (centred)"),
+  noncentred_tau = summarise_draws_basic(pick(runs_n, "tau"), "tau (non-centred)"),
+  centred_theta1 = summarise_draws_basic(pick(runs_c, "theta[1]"), "theta[1] (centred)"),
+  noncentred_theta1 = summarise_draws_basic(pick(runs_n, "theta[1]"), "theta[1] (non-centred)"))
+comp[, -1] <- signif(comp[, -1], 3); comp
+c(tau_MH_acceptance_centred = mean(sapply(runs_c, attr, "tau_acceptance")))
+```
+
+```{r}
+#| label: fig-gibbs-hier-traces
+#| fig-cap: "Eight schools: traces of $\\tau$ for one chain of the centred Gibbs sampler (top) and the non-centred sampler (bottom). The centred chain gets stuck for long stretches at small $\\tau$, where $\\theta_j$ and $\\mu$ are tightly coupled; the non-centred chain moves freely."
+#| fig-height: 4
+par(mfrow = c(2, 1), mar = c(2.5, 4, 1, 1))
+plot(runs_c[[1]][keep, "tau"], type = "l", col = course_cols[["blue"]], lwd = 0.6, ylab = "tau (centred)", xlab = "")
+plot(runs_n[[1]][keep, "tau"], type = "l", col = course_cols[["orange"]], lwd = 0.6, ylab = "tau (non-centred)", xlab = "")
+```
+
+Both samplers estimate the same posterior means (within MCSE), but the non-centred sampler's bulk-ESS for $\tau$ is about seventy times larger, and its tail-ESS about a hundred times larger. The reason is the dependence structure. In the centred parameterisation, when $\tau$ is small all $\theta_j$ must be close to $\mu$, and when the $\theta_j$ are close to $\mu$ the full conditional of $\tau$ is concentrated near zero. Each block pins the other, so the chain lingers in the neck of the funnel. With these data (8 schools, large standard errors) the likelihood is weak, so the posterior is close to the prior and the non-centred parameterisation is preferable. With strongly informative data the ranking reverses [@papaspiliopoulos2007general]. @sec-hierarchical and Project 4 develop this further.
+
+## R implementation {#sec-gibbs-r}
+
+All Gibbs samplers in the course are in `R/samplers/gibbs.R`:
+
+```{r}
+#| file: R/samplers/gibbs.R
+```
+
+Design notes:
+
+- **Each sampler encodes derived full conditionals.** The derivations are in comments next to the code, so that a reader can check the code against the mathematics line by line.
+- **Blocks are updated in place.** The most recent value of every block is used, which is what makes the systematic scan correct.
+- **The linear-regression sampler draws $\beta$ jointly** using the Cholesky factor of the conditional precision, which is blocking in practice. It avoids explicit matrix inversion (@sec-math-cholesky).
+- **The centred hierarchical sampler reports the acceptance rate of its Metropolis step for $\tau$** as an attribute, because Metropolis-within-Gibbs steps need tuning like any other MH step.
+
+## Computational experiment {#sec-gibbs-experiment}
+
+**Correlation and blocking.** We compare the integrated autocorrelation time of $x_1$ under componentwise Gibbs with the theoretical value $(1+\rho^2)/(1-\rho^2)$, and with a blocked sampler that draws $(x_1,x_2)$ jointly.
+
+```{r}
+#| label: gibbs-correlation
+set.seed(1303)
+rhos <- c(0, 0.5, 0.9, 0.99)
+res <- t(sapply(rhos, function(r) {
+  g <- gibbs_bivariate_normal(r, 50000)[-(1:500), 1]
+  blocked <- rmvnorm_chol(50000, c(0, 0), matrix(c(1, r, r, 1), 2))[, 1]
+  c(rho = r, tau_theory = (1 + r^2) / (1 - r^2), tau_gibbs = iat(g), tau_blocked = iat(blocked))
+}))
+round(res, 2)
+```
+
+**Rao–Blackwellisation.** For the bivariate normal with $\rho=0.9$, estimate $\mathbb E[x_1^2]=1$ by averaging $x_1^2$ along the chain, or by averaging $\mathbb E[x_1^2\mid x_2]=\rho^2x_2^2+1-\rho^2$:
+
+```{r}
+#| label: gibbs-rao-blackwell
+set.seed(1304)
+reps <- replicate(200, {
+  g <- gibbs_bivariate_normal(0.9, 5000)[-(1:200), ]
+  c(raw = mean(g[, 1]^2), rao_blackwell = mean(0.81 * g[, 2]^2 + 0.19))
+})
+rbind(mean = rowMeans(reps), sd = apply(reps, 1, sd))
+```
+
+**An improper posterior with proper full conditionals.** Replace the half-normal prior on $\tau$ in the centred model by $\pi(\tau^2)\propto1/\tau^2$ (flat on $\log\tau$), keeping a flat prior on $\mu$. Every full conditional is proper: $\theta_j$ and $\mu$ are normal, and $\tau^2\mid\theta,\mu\sim\mathrm{InvGamma}(J/2,\ \frac12\sum_j(\theta_j-\mu)^2)$. Yet by @prp-hier-propriety the joint posterior is improper. The Gibbs sampler runs without complaint:
+
+```{r}
+#| label: fig-gibbs-improper
+#| fig-cap: "A Gibbs sampler for the eight-schools model with the improper prior $\\pi(\\tau^2)\\propto1/\\tau^2$, whose full conditionals are all proper. The chain wanders, then collapses towards $\\tau=0$ (note the log scale) until $\\tau$ underflows to zero in floating point: there is no posterior for it to converge to."
+#| fig-height: 3.2
+improper_gibbs <- function(n_iter, tau = 5) {
+  J <- 8; mu <- 0; out <- rep(NA_real_, n_iter)
+  for (t in seq_len(n_iter)) {
+    prec <- 1 / s^2 + 1 / tau^2
+    theta <- rnorm(J, (y / s^2 + mu / tau^2) / prec, sqrt(1 / prec))
+    mu <- rnorm(1, mean(theta), tau / sqrt(J))
+    tau <- sqrt(1 / rgamma(1, J / 2, 0.5 * sum((theta - mu)^2)))
+    if (!is.finite(tau) || tau < 1e-150) {           # collapsed to (numerically) zero
+      attr(out, "collapsed_at") <- t
+      break
+    }
+    out[t] <- tau
+  }
+  out
+}
+set.seed(1305)
+tr <- improper_gibbs(20000)
+plot(tr, type = "l", log = "y", col = course_cols[["blue"]], lwd = 0.6, xlab = "iteration", ylab = "tau (log scale)")
+c(collapsed_at_iteration = attr(tr, "collapsed_at"))
+```
+
+Once $\tau$ is small, the $\theta_j$ are drawn close to $\mu$, which makes $\sum_j(\theta_j-\mu)^2$ smaller still, and the full conditional of $\tau^2$ then pushes it further towards zero. This is the self-reinforcing collapse into the infinite mass at $\tau=0$ described in @prp-hier-propriety. In this run the chain wandered for about 12 700 iterations before $\tau$ underflowed to zero. Any analysis based on, say, the first 10 000 iterations would have produced plausible-looking output for a posterior that does not exist. Propriety must be established mathematically [@hobert1996effect].
+
+## Diagnostics and validation {#sec-gibbs-validation}
+
+- **Check each full conditional** against the joint: for a scalar block, evaluate the log joint on a grid of $\theta_k$ values with $\theta_{-k}$ fixed, normalise, and compare with the derived density. The tests in `tests/testthat/test-gibbs.R` check samplers against grid posteriors and against each other (centred versus non-centred).
+- **Use multiple dispersed chains** and the diagnostics of Part V. Gibbs samplers on dependent posteriors produce smooth-looking but slowly drifting traces.
+- **Monitor Metropolis-within-Gibbs acceptance rates.**
+- **Prove propriety** for any improper prior (@sec-prior-improper).
+
+## Interpretation {#sec-gibbs-interpretation}
+
+Gibbs sampling turns a $d$-dimensional sampling problem into a sequence of low-dimensional ones, at the cost of moving only parallel to the chosen blocks. Its efficiency is governed by the posterior dependence *between* blocks. The same model can be easy or hard to sample depending on how it is parameterised and blocked. When a Gibbs sampler mixes slowly, the remedy is usually to change the parameterisation or the blocking, not to run it longer.
+
+## Limitations and common errors {#sec-gibbs-errors}
+
+- **Using stale values**: in a systematic scan, each update must condition on the most recent values of the other blocks.
+- **Incorrect full conditionals**, typically a missing factor of the likelihood or prior that involves the block. Check each conditional numerically against the joint.
+- **Improper posteriors with proper conditionals**: Gibbs sampling provides no protection.
+- **Ignoring strong posterior dependence**: componentwise updates of highly correlated parameters (regression coefficients with collinear predictors, hierarchical location and scale) mix very slowly.
+- **Untuned Metropolis-within-Gibbs steps**.
+- **Assuming positivity** when the support has disconnected or corner-touching pieces (@exr-gibbs-3).
+
+## Chapter summary {#sec-gibbs-summary}
+
+- Gibbs sampling draws each block from its full conditional, obtained by keeping the factors of likelihood × prior that involve the block (@eq-full-conditional).
+- Each update is $\pi$-reversible, systematic scans are $\pi$-invariant, and random scans are reversible. A Gibbs update is an MH step with acceptance probability one.
+- Under positivity, the full conditionals determine the joint (@prp-brook). Proper full conditionals do *not* guarantee a proper joint.
+- Mixing is governed by posterior dependence between blocks. For a bivariate normal, $\tau=(1+\rho^2)/(1-\rho^2)$ (@prp-gibbs-bvn). Blocking, reparameterisation and Rao–Blackwellisation help.
+- Non-standard full conditionals are handled with Metropolis-within-Gibbs, slice sampling, data augmentation or parameter expansion.
+
+## Exercises {#sec-gibbs-exercises}
+
+::: {#exr-gibbs-1}
+**[Mathematical ★]** For the model $y_i\mid\lambda_1,\lambda_2,k\sim\mathrm{Poisson}(\lambda_1)$ for $i\le k$ and $\mathrm{Poisson}(\lambda_2)$ for $i>k$ (a change-point model), with $\lambda_j\sim\mathrm{Gamma}(a,b)$ and $k$ uniform on $\{1,\dots,n-1\}$, derive all full conditional distributions.
+:::
+
+::: {#exr-gibbs-2}
+**[R ★★]** Implement the change-point Gibbs sampler of @exr-gibbs-1 and apply it to the `discoveries` series (@sec-pred-worked). Report the posterior of the change point and compare the two rates.
+:::
+
+::: {#exr-gibbs-3}
+**[Proof ★★]** Let $\pi$ be uniform on $([0,1]\times[0,1])\cup([1,2]\times[1,2])$. Show that the systematic-scan Gibbs sampler started in the first square never reaches the second, and explain which assumption of @prp-brook fails.
+:::
+
+::: {#exr-gibbs-4}
+**[Mathematical ★★]** For the bivariate normal with correlation $\rho$, compute the integrated autocorrelation time of $x_1$ under the *random-scan* Gibbs sampler (one randomly chosen coordinate updated per iteration), and compare it with twice the systematic-scan value. Which is more efficient per coordinate update?
+:::
+
+::: {#exr-gibbs-5}
+**[Proof ★★]** Show that in a two-block Gibbs sampler the sequence $\theta_1^{(t)}$ is itself a Markov chain, and that it is reversible with respect to the marginal posterior $\pi(\theta_1\mid y)$.
+:::
+
+::: {#exr-gibbs-6}
+**[Simulation ★★]** For the semi-conjugate normal model, compare the raw and Rao–Blackwellised estimators of $\mathbb E[\mu\mid y]$, using $\mathbb E[\mu\mid\sigma^2,y]$ from @prp-semiconjugate-normal, over 200 replicate chains. Report the variance reduction.
+:::
+
+::: {#exr-gibbs-7}
+**[Diagnostics ★★]** Run the centred eight-schools Gibbs sampler with the Metropolis step size for $\log\tau$ set to 0.05 and to 5. Report the acceptance rates and ESS for $\tau$, and explain what an inadequately tuned Metropolis-within-Gibbs step does to the whole sampler.
+:::
+
+::: {#exr-gibbs-8}
+**[Critique ★★]** A paper fits a hierarchical model in BUGS with $\tau^2\sim\mathrm{InvGamma}(0.001,0.001)$, reports that "the Gibbs sampler converged", and gives a posterior mean of $\tau$ of 0.04. Discuss what could be going on, with reference to @sec-prior-improper and this chapter's experiment.
+:::
+
+::: {#exr-gibbs-9}
+**[Research ★★★]** The ancillarity–sufficiency interweaving strategy [@yu2011center] combines centred and non-centred updates within one sweep. Implement an interweaving sampler for the eight-schools model and compare its ESS for $\tau$ with the two samplers in this chapter.
+:::
+
+## Further reading {#sec-gibbs-reading}
+
+- @geman1984stochastic and @gelfand1990sampling: the papers that introduced Gibbs sampling to image analysis and to Bayesian statistics.
+- @casella1992explaining: an elementary explanation.
+- @liu1994covariance and @roberts1997updating: covariance structure, blocking and scan order.
+- @gelfand1995efficient, @papaspiliopoulos2007general and @yu2011center: parameterisation of hierarchical models.
+- @tanner1987calculation, @vandyk2001art, @albert1993bayesian and @polson2013bayesian: data augmentation.
+- @hobert1996effect: improper posteriors in Gibbs sampling.
+
+## Solutions {#sec-gibbs-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-gibbs-1
+With $S_k=\sum_{i\le k}y_i$ and $S=\sum_iy_i$: $\lambda_1\mid k,y\sim\mathrm{Gamma}(a+S_k,b+k)$; $\lambda_2\mid k,y\sim\mathrm{Gamma}(a+S-S_k,b+n-k)$; and $k\mid\lambda_1,\lambda_2,y$ is discrete on $\{1,\dots,n-1\}$ with $\mathbb P(k)\propto\lambda_1^{S_k}e^{-k\lambda_1}\lambda_2^{S-S_k}e^{-(n-k)\lambda_2}$, computed on the log scale and normalised with log-sum-exp.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-gibbs-2
+```{r}
+#| eval: false
+y <- as.vector(discoveries); n <- length(y); a <- 2; b <- 0.5
+cs <- cumsum(y); S <- sum(y); k <- n %/% 2; out <- matrix(NA, 10000, 3)
+set.seed(2)
+for (t in 1:10000) {
+  l1 <- rgamma(1, a + cs[k], b + k); l2 <- rgamma(1, a + S - cs[k], b + n - k)
+  kk <- 1:(n - 1); lp <- cs[kk] * log(l1) - kk * l1 + (S - cs[kk]) * log(l2) - (n - kk) * l2
+  k <- sample(kk, 1, prob = normalise_log_weights(lp)); out[t, ] <- c(l1, l2, k)
+}
+table(1859 + out[-(1:1000), 3])[1:10]
+```
+The posterior of the change point concentrates in the late nineteenth or early twentieth century, with the later rate lower than the earlier one, consistent with the trend found by the posterior predictive check of @sec-pred-worked. The posterior is diffuse, because the change is gradual rather than abrupt.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-gibbs-3
+From $(x_1,x_2)$ in the first square, $x_1\mid x_2$ is uniform on $[0,1]$ if $x_2<1$ (the slice at height $x_2$ meets only the first square), and similarly for $x_2\mid x_1$. The chain can reach the second square only through the corner point $(1,1)$, a set of probability zero. The positivity condition fails: $p(x)=0$ on $[0,1]\times[1,2]$, so the telescoping path in Brook's lemma passes through zero-density points. The Gibbs sampler is reducible even though $\pi$ is a perfectly good target.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-gibbs-4
+Write $v_t=(x_1,x_2)$. Updating $x_1$ maps $\mathbb E[v_{t+1}\mid v_t]$ to $\begin{pmatrix}0&\rho\\0&1\end{pmatrix}v_t$, and updating $x_2$ to $\begin{pmatrix}1&0\\\rho&0\end{pmatrix}v_t$. The random scan averages these: $A=\frac12\begin{pmatrix}1&\rho\\\rho&1\end{pmatrix}$, with eigenvalues $\lambda_\pm=(1\pm\rho)/2$ along $(1,\pm1)$. Since $\operatorname{Cov}(v_{t+k},v_t)=A^k\Sigma$ and $\Sigma$ has the same eigenvectors (eigenvalues $1\pm\rho$), $\gamma_k(x_1)=\frac12\{(1+\rho)\lambda_+^k+(1-\rho)\lambda_-^k\}$. Summing,
+$$\tau_{\mathrm{RS}}=1+\frac{(1+\rho)^2}{1-\rho}+\frac{(1-\rho)^2}{1+\rho}\quad\text{per single-coordinate update},$$
+compared with $2(1+\rho^2)/(1-\rho^2)$ per coordinate update for the systematic scan. For $\rho=0.9$ these are about 37.1 and 19.1, and for $\rho=0$ they are 3 and 2. The systematic scan is more efficient per coordinate update for this target, by a factor approaching 2 as $\rho\to1$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-gibbs-5
+$\theta_1^{(t+1)}$ is drawn by first drawing $\theta_2\sim\pi(\theta_2\mid\theta_1^{(t)})$, then $\theta_1^{(t+1)}\sim\pi(\theta_1\mid\theta_2)$. Given $\theta_1^{(t)}$, this does not depend on earlier history, so $(\theta_1^{(t)})$ is Markov with kernel $K(\theta_1,\theta_1')=\int\pi(\theta_2\mid\theta_1)\pi(\theta_1'\mid\theta_2)\,d\theta_2$. Then $\pi(\theta_1)K(\theta_1,\theta_1')=\int\frac{\pi(\theta_1,\theta_2)\pi(\theta_1',\theta_2)}{\pi(\theta_2)}d\theta_2$, which is symmetric in $(\theta_1,\theta_1')$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-gibbs-6
+The Rao–Blackwellised estimator averages $\mathbb E[\mu\mid\sigma^{2(t)},y]=\frac{m_0/v_0+n\bar y/\sigma^{2(t)}}{1/v_0+n/\sigma^{2(t)}}$. Because $\mu$ and $\sigma^2$ are nearly independent here, this conditional mean barely varies, and the Rao–Blackwellised estimator has a far smaller variance than the raw average, often by an order of magnitude.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-gibbs-7
+With step 0.05 almost every $\tau$ proposal is accepted, but each moves $\log\tau$ by a tiny amount, so $\tau$ mixes very slowly. With step 5 almost every proposal is rejected and $\tau$ stays fixed for long stretches. In both cases the ESS for $\tau$ collapses, and because $\theta$ and $\mu$ are drawn conditionally on $\tau$, their mixing degrades too. A badly tuned Metropolis-within-Gibbs block is the bottleneck of the whole sampler.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-gibbs-8
+$\mathrm{InvGamma}(0.001,0.001)$ is close to the improper $1/\tau^2$ prior of the experiment, so the posterior is nearly improper with a spike near $\tau=0$. A posterior mean of $0.04$ may reflect the chain collapsing into the neck of the funnel, especially with a centred Gibbs sampler, rather than a genuine finding of almost no between-group variation. "Converged" may simply mean the chain is stuck. Recommendations: a weakly informative prior on $\tau$ such as half-normal or half-Cauchy [@gelman2006prior], a non-centred parameterisation, multiple dispersed chains and sensitivity analysis.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-gibbs-9
+In each sweep, (i) update $\theta$ given $(\mu,\tau)$ in the centred form; (ii) update $(\mu,\tau)$ given $\theta$ (centred); (iii) transform to $\eta=(\theta-\mu)/\tau$ and update $(\mu,\tau)$ given $\eta$ (non-centred), with $\theta$ recomputed. Each step is a valid Gibbs or MH step for the same posterior. Interweaving typically achieves an ESS for $\tau$ at least as good as the better of the two parameterisations across data regimes, which is its purpose [@yu2011center].
+:::

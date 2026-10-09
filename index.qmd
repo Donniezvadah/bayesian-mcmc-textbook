@@ -1,0 +1,74 @@
+# About this course {.unnumbered}
+
+This is an open textbook and computational course on Bayesian inference and Markov chain Monte Carlo (MCMC). It starts with probability spaces and ends at current research: convergence theory, Hamiltonian dynamics, validation of samplers, and how to read a methods paper critically. Every algorithm in the book is derived, implemented from scratch in R, tested against known answers, and diagnosed. You will also learn where each method fails.
+
+::: {.home-start}
+[Begin with Chapter 1: Probability and Statistical Foundations →](chapters/01-probability-foundations.qmd){.btn .btn-primary role="button"}
+:::
+
+## Who this course is for {#sec-home-audience}
+
+The material is written for advanced undergraduates, master's and PhD students, researchers who use Bayesian methods, and instructors who want a teaching resource they can check line by line. Readers come in at different levels. Parts I–II can be read as a first rigorous course in Bayesian statistics, Parts III–V as a graduate course in computational inference, and Parts VI–VII as a doctoral-level module.
+
+**Prerequisites.** You should be comfortable with:
+
+- single- and multivariable calculus (partial derivatives, multiple integrals, change of variables);
+- linear algebra (matrix products, inverses, eigenvalues, positive-definite matrices);
+- probability at the level of a first university course (random variables, expectation, common distributions, the law of large numbers and the central limit theorem);
+- basic programming in any language. R is taught from the ground up in Chapter 3.
+
+Measure theory is not required. Where it sharpens a statement (for example, densities with respect to a dominating measure in the Metropolis–Hastings ratio) it is introduced at the point of use, with references for readers who want the full treatment.
+
+## What you will be able to do {#sec-home-outcomes}
+
+The course is built so that reading alone is not enough. Mastery comes from doing the derivations, writing and testing code, and carrying out the projects. Learners who complete the exercises and projects should be able to:
+
+1. derive posterior, predictive and full-conditional distributions for a stated model, and state the assumptions under which each result holds;
+2. explain why a Markov chain with a given transition kernel has a given invariant distribution, and what extra conditions are needed for convergence and for a central limit theorem;
+3. implement Metropolis–Hastings, Gibbs, Hamiltonian Monte Carlo and several specialised samplers in R, with input validation, log-scale arithmetic and unit tests;
+4. validate a sampler against analytical results, by simulation-based calibration and by parameter recovery, and quantify Monte Carlo error rather than judging estimates by eye;
+5. diagnose convergence and mixing with several complementary tools (trace plots, rank-normalised $\widehat R$, bulk and tail effective sample size, Monte Carlo standard errors), and explain why no single diagnostic proves convergence;
+6. build, fit, check and criticise regression, hierarchical and time-series models, including prior and posterior predictive checks and sensitivity analysis;
+7. compare models with marginal likelihoods and with predictive criteria, knowing what each one measures;
+8. produce a reproducible computational report, and read, reproduce and critique a published computational-statistics paper.
+
+## The learning pathway {#sec-home-pathway}
+
+| Part | Chapters | Focus |
+|:-----|:---------|:------|
+| [I. Foundations](chapters/01-probability-foundations.qmd) | 1–3 | Probability, mathematical tools for computation, statistical computing in R |
+| [II. Bayesian statistics](chapters/04-bayesian-paradigm.qmd) | 4–8 | Bayes' theorem, conjugate models, decision theory, priors, prediction and model checking |
+| [III. Monte Carlo foundations](chapters/09-monte-carlo.qmd) | 9–11 | Monte Carlo integration, Markov chains, why MCMC works |
+| [IV. Core MCMC algorithms](chapters/12-metropolis-hastings.qmd) | 12–16 | Metropolis–Hastings, Gibbs, importance sampling, HMC, adaptive and gradient-based methods |
+| [V. Reliability](chapters/17-convergence-diagnostics.qmd) | 17–19 | Convergence diagnostics, mixing and Monte Carlo error, debugging and validation |
+| [VI. Modelling in practice](chapters/20-bayesian-regression.qmd) | 20–23 | Regression, hierarchical models, time series, model comparison |
+| [VII. Research level](chapters/24-advanced-mcmc-theory.qmd) | 24–27 | Ergodic theory, specialised samplers, software engineering, research frontiers |
+| [Projects](projects/p1-coin.qmd) | P1–P7, capstone | End-to-end analyses, algorithm comparison, a reproducibility study |
+: The structure of the course. Each part ends with a cumulative checkpoint. {.pathway tbl-colwidths="[24,14,62]"}
+
+Each chapter follows the same pattern: learning objectives and prerequisites, motivation, definitions, mathematical development with proofs, a worked example, an R implementation, a computational experiment, diagnostics and validation, interpretation, limitations and common errors, a summary, exercises, further reading, and finally solutions, kept in a separate section so you can attempt the problems first. [How to use this book](front/how-to-use.qmd) explains how to study with the book, and the [notation page](front/notation.qmd) fixes the symbols used throughout.
+
+## Resources {#sec-home-resources}
+
+- **Textbook.** The chapters, listed in the sidebar. Use the search box to find a topic.
+- **R code.** Every sampler, model and diagnostic is in the `R/` folder of the repository and is listed, with download links, in [Appendix B](appendices/r-code.qmd). Chapters display this same code, so what you read is what is tested.
+- **Tests.** The `testthat` suite in `tests/testthat/` checks the code against analytical results, finite-difference gradients, exact transition matrices and the reference implementations in the `posterior` and `coda` packages.
+- **Exercises and checkpoints.** Each chapter has graded exercises with solutions. Each part ends with a cumulative checkpoint.
+- **Projects.** Seven end-to-end [projects](projects/p1-coin.qmd) and a [capstone assessment with rubric](projects/capstone.qmd).
+- **References.** A [verified bibliography](references.qmd) of primary literature, textbooks and software documentation.
+- **Data.** Provenance, licences and variables for every dataset are in [Appendix C](appendices/datasets.qmd).
+- **Source repository.** The book is built from a Git repository with GitHub Actions. When the site is built by the repository's workflow, the sidebar shows links to the source and to the issue tracker for reporting errors.
+
+## Status and version {#sec-home-status}
+
+This is **version 0.1.0** (first complete draft, October 2026). All 27 chapters, seven projects, the capstone, the checkpoints and the appendices are written. The R test suite runs on every build. The [computational environment appendix](appendices/environment.qmd) records the software versions used to produce the outputs shown. The mathematics has been checked by the author, by automated tests where a statement can be tested numerically, and by cross-checks against the cited literature. It has not yet been through external peer review. Corrections are very welcome; see the contributing guide in the repository.
+
+## How to cite {#sec-home-cite}
+
+> Donnie (2026). *Bayesian Statistics and Markov Chain Monte Carlo: From Foundations to Advanced Computational Inference*. Version 0.1.0. Open textbook.
+
+Citation metadata in machine-readable form is in the repository's `CITATION.cff`.
+
+## Licence {#sec-home-licence}
+
+The text and figures are licensed under [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/). The code is released under the MIT licence. Third-party datasets keep their own terms, listed in [Appendix C](appendices/datasets.qmd).

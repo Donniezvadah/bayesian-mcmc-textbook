@@ -1,0 +1,360 @@
+# Bayesian Model Comparison and Selection {#sec-model-comparison}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. define marginal likelihoods, Bayes factors and posterior model probabilities, and explain their dependence on the priors within each model;
+2. compute marginal likelihoods by analytical, Laplace, importance-sampling, tempering and grid methods, and recognise unreliable estimators;
+3. define the expected log pointwise predictive density, and estimate it by leave-one-out cross-validation (exact, importance-sampled and Pareto-smoothed) and by WAIC;
+4. interpret elpd differences with their standard errors, and use Pareto $\hat k$ diagnostics;
+5. explain why Bayes factors and predictive criteria answer different questions, and choose between them for a given purpose;
+6. state the limitations of model selection criteria, and combine model comparison with model criticism and sensitivity analysis.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-dec-testing (Bayes factors, Lindley's paradox), @sec-prediction (scoring rules, predictive checks), @sec-importance (importance sampling and SMC), @sec-regression and @sec-hierarchical (the models compared).
+:::
+
+## Motivation {#sec-mc-cmp-motivation}
+
+Analyses usually involve several candidate models: with or without a predictor, Poisson or overdispersed, pooled or hierarchical. Choosing between them, or combining them, requires a criterion. Two families of criteria dominate Bayesian practice. **Marginal likelihoods and Bayes factors** ask which model better predicted the data *before seeing them*, given its prior. **Predictive criteria** (cross-validation, WAIC) ask which model will better predict *new* data, given the observed data. The two often agree, and they can disagree sharply, because they answer different questions. This chapter develops both carefully, with their computational methods and their failure modes, and argues that model comparison should complement model checking rather than replace it.
+
+## Definitions and notation {#sec-cmp-definitions}
+
+Let $M_1,\dots,M_K$ be models, each with parameter $\theta_k$, prior $\pi_k(\theta_k)$ and likelihood $p(y\mid\theta_k,M_k)$.
+
+::: {#def-model-evidence}
+## Marginal likelihood, Bayes factor and posterior model probability
+The **marginal likelihood** (evidence) of $M_k$ is $p(y\mid M_k)=\int p(y\mid\theta_k,M_k)\pi_k(\theta_k)\,d\theta_k$. The **Bayes factor** of $M_j$ against $M_k$ is $B_{jk}=p(y\mid M_j)/p(y\mid M_k)$. With prior model probabilities $\mathbb P(M_k)$, the **posterior model probabilities** are $\mathbb P(M_k\mid y)\propto p(y\mid M_k)\,\mathbb P(M_k)$.
+:::
+
+::: {#def-elpd}
+## Expected log predictive density
+For a new observation $\tilde y_i$ from the true data-generating distribution at the design point of observation $i$, the **expected log pointwise predictive density** is
+$$
+\mathrm{elpd}=\sum_{i=1}^n\mathbb E_{\tilde y_i}\big[\log p(\tilde y_i\mid y)\big],
+$$
+where $p(\tilde y_i\mid y)$ is the posterior predictive density. It measures out-of-sample predictive accuracy with the log score (@sec-pred-scores). Its **leave-one-out** estimate is $\widehat{\mathrm{elpd}}_{\mathrm{loo}}=\sum_i\log p(y_i\mid y_{-i})$, where $y_{-i}$ denotes the data without observation $i$.
+:::
+
+## Mathematical development {#sec-cmp-development}
+
+### Marginal likelihoods and their interpretation {#sec-cmp-evidence}
+
+By the chain rule (@eq-sequential-likelihood),
+$$
+\log p(y\mid M)=\sum_{i=1}^n\log p(y_i\mid y_{1:i-1},M),
+$$ {#eq-evidence-prequential}
+so the log evidence is the cumulative log score of *sequential* predictions, starting from predictions made with the prior alone. A model is rewarded for predicting each observation well given the previous ones, beginning with no data. This explains both the strength and the weakness of the marginal likelihood:
+
+- it penalises complexity automatically: a model with many parameters spreads its prior predictive mass thinly and predicts the early observations poorly (the "Bayesian Occam's razor");
+- it depends heavily on the prior, because early predictions are made by the prior. Two priors that give the same posterior can give very different evidence (@exr-bayes-8, @prp-lindley);
+- it is undefined for improper priors (the arbitrary constant does not cancel between models with different parameters).
+
+@fong2020marginal make this precise: the log evidence equals the average of leave-$p$-out cross-validation log scores over all held-out set sizes $p=1,\dots,n$. It therefore weights heavily the predictions made from very little data, while LOO weights only predictions made from $n-1$ observations.
+
+**Posterior model probabilities** require the true model to be one of the candidates (the "$\mathcal M$-closed" view, @bernardo1994theory). When no candidate is true, as is typical, they concentrate on the model closest in Kullback–Leibler divergence as $n$ grows, sometimes with overwhelming but misleading confidence. Predictive model averaging by **stacking** [@yao2018stacking] is often preferable to **Bayesian model averaging** [@hoeting1999bayesian] in that setting.
+
+### Computing marginal likelihoods {#sec-cmp-computing}
+
+The marginal likelihood is a normalising constant, which MCMC does not provide. Options:
+
+1. **Closed form** for conjugate models (@sec-conjugate, @exr-conj-5).
+2. **Laplace approximation** (@eq-laplace): cheap, accurate for near-Gaussian posteriors, and potentially poor otherwise (@sec-math-worked).
+3. **Importance sampling** with a heavy-tailed proposal fitted to the posterior (@sec-is-evidence): unbiased for $p(y)$, reliable in low dimensions.
+4. **Bridge sampling** [@meng1996simulating; @gelman1998simulating] uses draws from both a proposal and the posterior and is far more efficient than either one-sided estimator.
+5. **Tempering**: power posteriors (thermodynamic integration) [@friel2008marginal], annealed importance sampling [@neal2001annealed] and SMC samplers (`smc_tempering()`) bridge from prior to posterior through intermediate distributions.
+6. **Chib's method** [@chib1995marginal] uses the candidate's formula @eq-candidate-formula with a posterior density estimate at one point from Gibbs output.
+
+The **harmonic mean estimator** [@newton1994approximate] must be avoided. It usually has infinite variance, and it barely responds to the prior, which is precisely what the evidence depends on. @llorente2023marginal review all of these methods.
+
+### Leave-one-out cross-validation {#sec-cmp-loo}
+
+Exact LOO requires $n$ refits. Importance sampling avoids them by reweighting the full-data posterior draws.
+
+::: {#prp-is-loo}
+## Importance-sampling identity for LOO
+Assume the observations are conditionally independent given $\theta$. Then
+$$
+p(y_i\mid y_{-i})=\Big(\mathbb E_{\theta\sim\pi(\theta\mid y)}\Big[\frac{1}{p(y_i\mid\theta)}\Big]\Big)^{-1}.
+$$
+:::
+
+::: {.proof}
+$\pi(\theta\mid y)\propto p(y_i\mid\theta)\,\pi(\theta\mid y_{-i})$, so $\pi(\theta\mid y)=p(y_i\mid\theta)\pi(\theta\mid y_{-i})/p(y_i\mid y_{-i})$. Then $\mathbb E_{\pi(\theta\mid y)}[1/p(y_i\mid\theta)]=\int\frac{\pi(\theta\mid y_{-i})}{p(y_i\mid y_{-i})}d\theta=\frac1{p(y_i\mid y_{-i})}$.
+:::
+
+With posterior draws $\theta^{(s)}$, the plain IS-LOO estimate is $\big(\frac1S\sum_s1/p(y_i\mid\theta^{(s)})\big)^{-1}$, a harmonic mean, with importance weights $w_s\propto1/p(y_i\mid\theta^{(s)})$. When observation $i$ is influential, the full-data posterior is far from the leave-one-out posterior, the weights have a heavy right tail, and the estimate can have infinite variance. **Pareto-smoothed importance sampling** (PSIS) [@vehtari2024pareto; @vehtari2017practical] replaces the largest weights by quantiles of a generalised Pareto distribution fitted to them. The fitted shape parameter $\hat k$ is a diagnostic: $\hat k<0.7$ (more precisely, below a threshold depending on $S$) indicates reliable estimates, and larger values mean that the IS approximation fails for observation $i$, which should then be refitted exactly or treated by other means. PSIS-LOO is implemented in the `loo` package [@loo2026].
+
+**WAIC** [@watanabe2010asymptotic] estimates the elpd by
+$$
+\widehat{\mathrm{elpd}}_{\mathrm{waic}}=\sum_i\log\Big(\frac1S\sum_sp(y_i\mid\theta^{(s)})\Big)-\sum_i\operatorname{Var}_s\big(\log p(y_i\mid\theta^{(s)})\big),
+$$
+the in-sample log predictive density minus an effective number of parameters. It is asymptotically equivalent to LOO in regular models, but it lacks a diagnostic of its own failure, and in finite samples PSIS-LOO is generally more reliable [@vehtari2017practical; @gelman2014understanding]. Older criteria such as DIC [@spiegelhalter2002bayesian] rely on point estimates and can behave badly for non-Gaussian posteriors.
+
+**Uncertainty.** An elpd difference between two models has a standard error, estimated from the pointwise differences $d_i$ as $\sqrt{n\operatorname{Var}(d_i)}$ (`elpd_difference()`). Differences that are small relative to their standard error, or small in absolute terms (below about 4 on the elpd scale), do not distinguish the models reliably.
+
+**What "pointwise" means.** LOO requires a choice of what is left out. For hierarchical models, leaving out an observation (predicting a new observation in an existing group) and leaving out a group (predicting a new group) answer different questions and require different pointwise log-likelihoods. For time series, LOO uses future data to predict the past, so leave-future-out cross-validation is appropriate for forecasting.
+
+### Predictive performance versus evidence {#sec-cmp-vs}
+
+| | Marginal likelihood / Bayes factor | LOO / WAIC |
+|:--|:--|:--|
+| Question | Which model, with its prior, best predicted the data sequentially from nothing? | Which model's posterior will best predict new data like these? |
+| Prior dependence | strong, even for diffuse priors | weak, through the posterior |
+| Improper priors | not usable | usable if the posterior is proper |
+| As $n\to\infty$ | selects the true model (if present), or the KL-closest one | may keep slightly over-complex models that predict equally well |
+| Computation | normalising constant: hard | from posterior draws: easy (PSIS) |
+| Diagnostics | variance of the estimator | Pareto $\hat k$ |
+| Typical use | testing well-defined scientific hypotheses with justified priors | choosing models for prediction; comparing non-nested models |
+
+Neither is generally "correct". Use Bayes factors when the scientific question is which of several precisely specified hypotheses is supported, and when the priors under each hypothesis can be justified, because the answer will depend on them. Use predictive criteria when the goal is prediction, or when priors are chosen for regularisation rather than belief. Do not treat them as interchangeable, and do not report one as if it were the other.
+
+### Limitations of model selection {#sec-cmp-limitations}
+
+- **Selection is not checking.** The best of several inadequate models is still inadequate. Posterior predictive checks (@sec-prediction) must accompany any comparison.
+- **Selection uncertainty.** Choosing a model and then reporting its posterior as if the choice were certain understates uncertainty. Averaging (BMA or stacking), or reporting results under several models, is more honest.
+- **Overfitting the selection.** Comparing many models with a noisy criterion and choosing the best leads to optimistic estimates of predictive performance [@piironen2017comparison].
+- **Sensitivity.** Conclusions should be checked against alternative priors (for Bayes factors) and alternative data partitions (for cross-validation).
+
+## Worked example 1: a Bayes factor and its prior {#sec-cmp-worked-bf}
+
+For Student's sleep differences (@sec-conj-sleep), compare $M_0$: $\mu=0$ against $M_1$: $\mu\mid\sigma^2\sim\mathrm N(0,\sigma^2/k_0)$, with $\sigma^2\sim\mathrm{InvGamma}(1,1)$ under both. Under $M_1$ the prior standard deviation of the standardised effect $\mu/\sigma$ is $1/\sqrt{k_0}$. Both marginal likelihoods have closed forms. Under $M_0$, $y$ is multivariate $t$, and under $M_1$ the NIG evidence of @exr-conj-5 applies.
+
+```{r}
+#| label: cmp-bf-sleep
+d <- with(sleep, extra[group == 2] - extra[group == 1]); n <- length(d); a0 <- 1; b0 <- 1
+log_ev_m0 <- lgamma(a0 + n / 2) - lgamma(a0) + a0 * log(b0) - (a0 + n / 2) * log(b0 + sum(d^2) / 2) - n / 2 * log(2 * pi)
+log_ev_m1 <- function(k0) { p <- nig_update(d, 0, k0, a0, b0)
+  -n / 2 * log(2 * pi) + 0.5 * log(k0 / p$k) + a0 * log(b0) - p$a * log(p$b) + lgamma(p$a) - lgamma(a0) }
+effect_sd <- c(0.1, 0.3, 1, 3, 10, 100)
+data.frame(prior_sd_of_standardised_effect = effect_sd,
+           log_B10 = round(sapply(effect_sd, function(s) log_ev_m1(1 / s^2) - log_ev_m0), 2),
+           P_M1_given_y_equal_prior_odds = round(sapply(effect_sd, function(s) plogis(log_ev_m1(1 / s^2) - log_ev_m0)), 3))
+```
+
+With a prior effect scale of about 1 (standardised effects of order one are plausible), the evidence strongly favours an effect ($2\log B_{10}\approx7.4$). As the prior on the effect becomes more diffuse, the Bayes factor declines steadily, and with a prior scale of 100 it is essentially neutral ($\log B_{10}\approx0$), even though the posterior of $\mu$ under $M_1$ hardly changes. (Very narrow priors also weaken the evidence, because they make $M_1$ almost indistinguishable from $M_0$.) This is Lindley's paradox (@prp-lindley) in a real example. The conclusion "the evidence favours an effect" is conditional on what the alternative hypothesis predicts, which must be justified.
+
+## Worked example 2: computing a marginal likelihood five ways {#sec-cmp-worked-evidence}
+
+For the bioassay model with $\mathrm N(0,10^2)$ priors, the grid computation of @sec-math-worked gives $\log p(y)\approx-9.797$ (for the Bernoulli-expanded data). We compare five estimators, each repeated 30 times to show its sampling variability.
+
+```{r}
+#| label: cmp-evidence-methods
+dose <- c(-0.86, -0.30, -0.05, 0.73); deaths <- c(0, 1, 3, 5)
+X <- cbind(1, rep(dose, each = 5)); y <- unlist(lapply(deaths, function(k) c(rep(1, k), rep(0, 5 - k))))
+model <- logistic_regression_model(X, y, prior_sd = 10)
+hess <- function(b) { p <- inv_logit(as.vector(X %*% b)); -crossprod(X * (p * (1 - p)), X) - diag(1 / 100, 2) }
+la <- laplace_approximation(model$log_density, model$grad, hess, c(0, 0))
+loglik <- function(b) model$log_density(b) - sum(dnorm(b, 0, 10, log = TRUE))
+set.seed(2301)
+est <- replicate(30, {
+  th_prior <- matrix(rnorm(4000, 0, 10), ncol = 2)                         # prior draws
+  prior_is <- log_mean_exp(apply(th_prior, 1, loglik))
+  is_t <- importance_sampling(function(b) 0, model$log_density, function(k) rmvt_chol(k, la$mode, la$cov, 4),
+                              function(x) dmvt_log(x, la$mode, la$cov, 4), 2000)$log_Z
+  smc <- smc_tempering(loglik, function(b) sum(dnorm(b, 0, 10, log = TRUE)),
+                       function(k) matrix(rnorm(2 * k, 0, 10), ncol = 2), n = 1000)$log_marginal_likelihood
+  post <- rw_metropolis(model$log_density, la$mode, 6000, 2.38^2 / 2 * la$cov)$draws[-(1:1000), ]
+  hm <- -log_mean_exp(-apply(post, 1, loglik))                             # harmonic mean: do not use
+  c(prior_IS = prior_is, t_proposal_IS = is_t, SMC = smc, harmonic_mean = hm)
+})
+res <- rbind(mean = rowMeans(est), sd = apply(est, 1, sd), bias_vs_grid = rowMeans(est) - (-9.797))
+cbind(round(res, 3), laplace = c(la$log_Z, 0, la$log_Z + 9.797))
+```
+
+The $t$-proposal importance sampler and SMC are accurate and precise. Plain importance sampling from the prior is unbiased on the natural scale but noisy, because most prior draws fall where the likelihood is negligible. The Laplace approximation is off by about 0.05, as seen in Chapter 2. The harmonic mean estimator is biased upwards by a large margin, a failure that does not shrink noticeably with more draws.
+
+## Worked example 3: LOO for count models, and a failing approximation {#sec-cmp-worked-loo}
+
+We compare the Poisson regression of @sec-reg-worked-poisson with the Poisson–lognormal model of @sec-hier-worked-glmm for the warp-break counts, using PSIS-LOO.
+
+```{r}
+#| label: cmp-loo-fits
+Xw <- model.matrix(~ wool * tension, warpbreaks); yw <- warpbreaks$breaks; n <- length(yw)
+pm <- poisson_regression_model(Xw, yw, prior_sd = c(5, rep(2.5, 5)))
+plm <- poisson_lognormal_model(Xw, yw, prior_sd = c(5, rep(2.5, 5)), s_u = 1)
+fit_hmc <- function(model, init, n_steps, seed) {
+  set.seed(seed)
+  do.call(rbind, lapply(1:4, function(k) {
+    wu <- hmc_warmup(model$log_density, model$grad, init + rnorm(length(init), 0, 0.05), 600, n_steps = n_steps)
+    hmc_sampler(model$log_density, model$grad, wu$position, 1500, wu$step_size, n_steps)$draws
+  }))
+}
+Bp <- fit_hmc(pm, c(log(mean(yw)), rep(0, 5)), 10, 2302)
+Bl <- fit_hmc(plm, c(log(mean(yw)), rep(0, 5), log(0.3), rep(0, n)), 15, 2303)
+# pointwise log-likelihoods
+ll_pois <- t(apply(Bp, 1, function(b) dpois(yw, exp(as.vector(Xw %*% b)), log = TRUE)))
+ll_cond <- t(apply(Bl, 1, function(p) dpois(yw, exp(as.vector(Xw %*% p[1:6]) + exp(p[7]) * p[8:(7 + n)]), log = TRUE)))
+gh <- gauss_hermite(30)                                       # integrate the random effect out
+ll_marg <- t(apply(Bl, 1, function(p) { eta <- as.vector(Xw %*% p[1:6]); su <- exp(p[7])
+  sapply(seq_len(n), function(i) log_sum_exp(log(gh$weights) + dpois(yw[i], exp(eta[i] + su * gh$nodes), log = TRUE))) }))
+dim(ll_pois); dim(ll_marg)
+```
+
+Three pointwise log-likelihoods are computed. For the Poisson–lognormal model, the *conditional* one, $\log p(y_i\mid\beta,\sigma_u,u_i)$, uses the observation's own random effect. The *marginal* one, $\log p(y_i\mid\beta,\sigma_u)=\log\int\mathrm{Poisson}(y_i\mid e^{x_i^\top\beta+\sigma_uz})\phi(z)\,dz$, integrates the random effect out by Gauss–Hermite quadrature.
+
+```{r}
+#| label: cmp-loo-results
+suppressPackageStartupMessages(library(loo))
+looify <- function(ll) suppressWarnings(loo(ll, r_eff = relative_eff(exp(ll), chain_id = rep(1:4, each = 1500))))
+l_pois <- looify(ll_pois); l_cond <- looify(ll_cond); l_marg <- looify(ll_marg)
+summ <- function(l, name) c(model = name, elpd_loo = round(l$estimates["elpd_loo", "Estimate"], 1),
+                            se = round(l$estimates["elpd_loo", "SE"], 1), p_loo = round(l$estimates["p_loo", "Estimate"], 1),
+                            n_khat_above_0.7 = sum(pareto_k_values(l) > 0.7))
+noquote(rbind(summ(l_pois, "Poisson"), summ(l_cond, "Poisson-lognormal, conditional"),
+              summ(l_marg, "Poisson-lognormal, marginal")))
+elpd_difference(l_marg$pointwise[, "elpd_loo"], l_pois$pointwise[, "elpd_loo"])
+c(waic_marginal = waic(ll_marg)$elpd_waic, waic_poisson = waic(ll_pois)$elpd_waic)
+```
+
+Three lessons:
+
+1. **The Poisson model predicts much worse.** Its elpd is lower by about 40, nearly four standard errors of the difference, as the predictive check of @sec-reg-worked-poisson anticipated, because it cannot accommodate the extra loom-to-loom variation. Its effective number of parameters $p_{\text{loo}}\approx21$, far more than its 6 coefficients, is itself a symptom of misspecification [@vehtari2017practical].
+2. **The conditional LOO for the random-effect model fails.** Many Pareto $\hat k$ values exceed 0.7. With one random effect per observation, leaving out $y_i$ removes all the information about $u_i$, so the leave-one-out posterior of $u_i$ is very different from the full posterior, and importance sampling cannot bridge the gap. The diagnostic correctly flags this. Its elpd estimate would also answer the wrong question ("predict this loom again, knowing its effect").
+3. **The marginal LOO is reliable**, with $\hat k$ values mostly small, and it answers the natural question: how well does the model predict the count of a *new* loom with these characteristics?
+
+## R implementation {#sec-cmp-r}
+
+```{r}
+#| file: R/diagnostics/model-comparison.R
+```
+
+`waic()` agrees with `loo::waic()` to machine precision (tested), and `loo_is()` is plain importance-sampling LOO, included to show what PSIS improves on. For applied work, use `loo::loo()` with relative efficiencies `r_eff` computed from the MCMC chains, as above, and inspect the Pareto $\hat k$ values. The marginal likelihood estimators used above are `laplace_approximation()`, `importance_sampling()` and `smc_tempering()` from earlier chapters.
+
+## Computational experiment: when Bayes factors and LOO disagree {#sec-cmp-experiment}
+
+Simulate $n$ observations from $\mathrm N(0.15,1)$ and compare $M_0:\mu=0$ with $M_1:\mu\sim\mathrm N(0,s^2)$ ($\sigma=1$ known) by the log Bayes factor and by the LOO elpd difference, for prior scales $s\in\{1,10\}$ and sample sizes $n\in\{20,200,2000\}$. Both criteria have closed forms here.
+
+```{r}
+#| label: cmp-disagree
+set.seed(2304)
+sim <- function(n, s) {
+  yy <- rnorm(n, 0.15, 1); ybar <- mean(yy)
+  logBF10 <- dnorm(ybar, 0, sqrt(1 / n + s^2), log = TRUE) - dnorm(ybar, 0, sqrt(1 / n), log = TRUE)
+  # exact LOO for M1: posterior from n-1 points, predictive N(m, 1 + v)
+  loo1 <- sum(sapply(seq_len(n), function(i) { v <- 1 / (1 / s^2 + (n - 1)); m <- v * sum(yy[-i])
+    dnorm(yy[i], m, sqrt(1 + v), log = TRUE) }))
+  loo0 <- sum(dnorm(yy, 0, 1, log = TRUE))
+  c(logBF10 = logBF10, loo_diff = loo1 - loo0)
+}
+res <- expand.grid(n = c(20, 200, 2000), s = c(1, 10))
+out <- t(sapply(seq_len(nrow(res)), function(r) rowMeans(replicate(100, sim(res$n[r], res$s[r])))))
+cbind(res, round(out, 2))
+```
+
+For small $n$, both criteria favour the simpler model or are equivocal, because a true effect of 0.15 is hard to detect. As $n$ grows, both come to favour $M_1$. But the log Bayes factor shifts by about 2 units (close to the asymptotic value $\log10\approx2.3$) when the prior scale $s$ changes from 1 to 10, at every $n$, while the LOO difference changes by a few tenths at most. A tenfold more diffuse prior on the effect costs $M_1$ evidence but not predictive accuracy.
+
+## Diagnostics and validation {#sec-cmp-validation}
+
+- For marginal likelihoods: compare two independent estimators (e.g. IS with a $t$ proposal and SMC), replicate to estimate Monte Carlo error, and check against closed forms where available. Never use the harmonic mean estimator.
+- For LOO: inspect all Pareto $\hat k$ values; refit exactly (or use $K$-fold CV) for observations with $\hat k>0.7$; check that $p_{\text{loo}}$ is plausible relative to the number of parameters (if it is much larger, the model is likely misspecified or the approximation failing).
+- Report elpd differences with standard errors, and do not over-interpret small differences.
+- Validate the pointwise log-likelihood definition: does it correspond to the prediction task of interest (new observations, new groups, future times)?
+
+## Interpretation {#sec-cmp-interpretation}
+
+For the warp-break data, predictive comparison strongly favours the model with loom-level variation, and that conclusion is robust because it rests on a large elpd difference with reliable diagnostics. For the sleep data, whether the evidence "favours an effect" depends on what the alternative predicts about effect sizes. That is a substantive judgement, and the Bayes factor makes its consequences explicit rather than hiding them. Model comparison clarifies trade-offs, but it does not replace thinking about what the models mean.
+
+## Limitations and common errors {#sec-cmp-errors}
+
+- **Bayes factors with vague or improper priors**: arbitrary, and often extreme in favour of the simpler model.
+- **The harmonic mean estimator** of the marginal likelihood.
+- **Ignoring Pareto $\hat k$ warnings**, or computing LOO with the wrong pointwise likelihood (conditional instead of marginal for random effects, LOO instead of leave-future-out for forecasting).
+- **Treating LOO and Bayes factors as interchangeable**, or posterior model probabilities as probabilities that a model is "true" when none is.
+- **Selecting a single model** and ignoring selection uncertainty.
+- **Comparing models without checking any of them.**
+
+## Chapter summary {#sec-cmp-summary}
+
+- The marginal likelihood is the cumulative sequential predictive score from the prior (@eq-evidence-prequential). Bayes factors compare models with their priors and are highly prior-sensitive.
+- Marginal likelihoods can be computed in closed form, or by Laplace, importance sampling, bridge sampling, tempering or SMC. The harmonic mean estimator must not be used.
+- LOO estimates out-of-sample predictive accuracy. The importance-sampling identity (@prp-is-loo) makes it cheap, Pareto smoothing makes it stable, and $\hat k$ diagnoses failure. WAIC is asymptotically equivalent but lacks diagnostics.
+- Predictive criteria and Bayes factors answer different questions and can disagree. Choose by purpose, and report the dependence on priors or on data partitions.
+- Model selection must be accompanied by model checking, uncertainty about the selection, and sensitivity analysis.
+
+## Exercises {#sec-cmp-exercises}
+
+::: {#exr-cmp-1}
+**[Mathematical ★]** Derive the closed-form marginal likelihood of $M_0$ in @sec-cmp-worked-bf (multivariate $t$), and verify the code's expression.
+:::
+
+::: {#exr-cmp-2}
+**[Proof ★★]** Show that WAIC's penalty $\sum_i\operatorname{Var}_{\theta\mid y}(\log p(y_i\mid\theta))$ equals the number of parameters $p$, to leading order, in a regular normal linear model with known variance and a flat prior.
+:::
+
+::: {#exr-cmp-3}
+**[R ★★]** Compute exact LOO for the Poisson warp-break model by refitting 54 times (use the Laplace approximation for speed, or short HMC runs), and compare it observation by observation with PSIS-LOO. Which observations differ most, and what are their $\hat k$ values?
+:::
+
+::: {#exr-cmp-4}
+**[Mathematical ★★]** For the conjugate normal model with known variance, write the marginal likelihood using @eq-evidence-prequential, and verify that it equals the closed form $\mathrm N_n(y\mid m_01,\sigma^2I+v_011^\top)$.
+:::
+
+::: {#exr-cmp-5}
+**[Simulation ★★]** For the eight-schools model, compute LOO with the pointwise log-likelihood $\log p(y_j\mid\theta_j)$ (leave out a school's estimate, keep its effect) and with $\log p(y_j\mid\mu,\tau)=\log\mathrm N(y_j\mid\mu,\sigma_j^2+\tau^2)$ (leave out a school entirely). Compare the $\hat k$ values and explain which question each answers.
+:::
+
+::: {#exr-cmp-6}
+**[Critique ★★]** A paper selects among 50 candidate regression models by WAIC and reports the posterior intervals of the selected model's coefficients as its main result. Discuss the problems and suggest alternatives.
+:::
+
+::: {#exr-cmp-7}
+**[Research ★★★]** Implement bridge sampling with the optimal iterative scheme of @meng1996simulating for the bioassay model, using posterior draws and draws from the $t$ proposal. Compare its variance with that of the one-sided IS estimator at equal cost.
+:::
+
+## Further reading {#sec-cmp-reading}
+
+- @kass1995bayes: Bayes factors, their interpretation and computation.
+- @vehtari2017practical and @vehtari2024pareto: PSIS-LOO and WAIC in practice; @gelman2014understanding for predictive information criteria.
+- @watanabe2010asymptotic: WAIC and singular learning theory.
+- @fong2020marginal: the relation between marginal likelihood and cross-validation.
+- @gelman1998simulating, @meng1996simulating, @friel2008marginal, @chib1995marginal and @llorente2023marginal: computing marginal likelihoods.
+- @hoeting1999bayesian and @yao2018stacking: Bayesian model averaging and stacking.
+- @piironen2017comparison: comparison of Bayesian predictive model selection methods.
+
+## Solutions {#sec-cmp-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-cmp-1
+$p(y\mid M_0)=\int\prod_i\mathrm N(y_i\mid0,\sigma^2)\,\mathrm{InvGamma}(\sigma^2\mid a_0,b_0)\,d\sigma^2=(2\pi)^{-n/2}\frac{b_0^{a_0}}{\Gamma(a_0)}\int(\sigma^2)^{-a_0-n/2-1}e^{-(b_0+\sum y_i^2/2)/\sigma^2}d\sigma^2=(2\pi)^{-n/2}\frac{b_0^{a_0}\Gamma(a_0+n/2)}{\Gamma(a_0)(b_0+\sum y_i^2/2)^{a_0+n/2}}$. Its logarithm is the code's `log_ev_m0`.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-cmp-2
+With known $\sigma^2$ and a flat prior, $\beta\mid y\sim\mathrm N(\hat\beta,\sigma^2(X^\top X)^{-1})$, and $\log p(y_i\mid\beta)=\text{const}-(y_i-x_i^\top\beta)^2/(2\sigma^2)$. Writing $r_i=y_i-x_i^\top\hat\beta$ and $\delta=x_i^\top(\beta-\hat\beta)\sim\mathrm N(0,\sigma^2h_{ii})$ with $h_{ii}$ the leverage, $\operatorname{Var}\big((r_i-\delta)^2/(2\sigma^2)\big)=\frac{4r_i^2\sigma^2h_{ii}+2\sigma^4h_{ii}^2}{4\sigma^4}$. Summing and using $\mathbb E[r_i^2]\approx\sigma^2$ and $\sum h_{ii}=p$ gives approximately $p$ (plus $O(\sum h_{ii}^2)$ terms that vanish when the leverages are small).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-cmp-3
+For each $i$, refit without observation $i$ (the Laplace approximation is adequate for this concave posterior) and compute $\log\int\mathrm{Poisson}(y_i\mid e^{x_i^\top\beta})\pi(\beta\mid y_{-i})d\beta$ by Monte Carlo from the approximate posterior. Differences from PSIS-LOO are largest for the most extreme counts (e.g. the largest counts in wool A, low tension), which also have the largest $\hat k$ values. Influential, poorly fitted observations are exactly where IS-LOO struggles.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-cmp-4
+$p(y_i\mid y_{1:i-1})=\mathrm N(y_i\mid m_{i-1},\sigma^2+v_{i-1})$, where $(m_{i-1},v_{i-1})$ is the posterior after $i-1$ observations (@prp-normal-known), starting from $(m_0,v_0)$. The product of these predictive densities is the joint density of $y$ under the model, which is Gaussian with mean $m_01$ and covariance $\sigma^2I+v_011^\top$. Verify numerically by comparing the sum of sequential log predictive densities with `dmvnorm_log()`.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-cmp-5
+With $\log p(y_j\mid\theta_j)$, removing $y_j$ leaves $\theta_j$ informed only by the population distribution, which is very different from its full posterior, so $\hat k$ values are high, especially for extreme schools. This version asks how well we predict a new estimate *for the same school*. With the marginal $\log\mathrm N(y_j\mid\mu,\sigma_j^2+\tau^2)$, the importance weights depend only on $(\mu,\tau)$, which are barely affected by removing one school, so $\hat k$ is small. This version asks how well we predict a *new school*. The second is usually the relevant question in this application.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-cmp-6
+Selecting the best of 50 models by a noisy criterion overfits the selection: the winner's apparent predictive performance is optimistic, and its posterior intervals ignore model uncertainty, so they are too narrow and possibly centred on effects that appear only because they won the selection. Alternatives: a single encompassing model with shrinkage priors (e.g. the regularised horseshoe [@piironen2017sparsity]); projection predictive variable selection, which selects relative to a reference model [@piironen2017comparison]; reporting results across several plausible models; and validating the selection procedure itself by cross-validation.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-cmp-7
+With $N_1$ posterior draws $\theta_i$ and $N_2$ proposal draws $\phi_j$, define $l_1(\theta)=\tilde\pi(\theta)/g(\theta)$ and iterate $\hat r^{(t+1)}=\frac{\frac1{N_2}\sum_j\frac{l_1(\phi_j)}{s_1l_1(\phi_j)+s_2\hat r^{(t)}}}{\frac1{N_1}\sum_i\frac{1}{s_1l_1(\theta_i)+s_2\hat r^{(t)}}}$, with $s_k=N_k/(N_1+N_2)$, to convergence; $\hat r$ estimates $Z$. Bridge sampling uses both samples symmetrically and typically has lower variance than the one-sided IS estimator, especially when the proposal's tails are imperfect. With MCMC posterior draws, $N_1$ should be replaced by an effective sample size.
+:::

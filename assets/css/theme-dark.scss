@@ -1,0 +1,47 @@
+/*-- scss:defaults --*/
+
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+$font-family-serif: "Source Serif 4", "Source Serif Pro", Georgia, Cambria, "Times New Roman", serif;
+$font-family-sans-serif: "Source Sans 3", "Source Sans Pro", -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+$font-family-monospace: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+
+$font-family-base: $font-family-serif;
+$headings-font-family: $font-family-sans-serif;
+$font-size-root: 17px;
+$line-height-base: 1.62;
+$headings-font-weight: 600;
+
+// Dark palette chosen for contrast >= 7:1 on body text and >= 4.5:1 on links.
+$body-bg: #16181b;
+$body-color: #e4e4e6;
+$primary: #8ab8e8;
+$secondary: #a9a9b0;
+$link-color: #8ec1f0;
+$link-hover-color: #b9d9f7;
+$border-color: #34373d;
+
+$code-color: #f0a6c8;
+$code-bg: #1f2227;
+$code-block-bg: #1f2227;
+$code-block-border-left: #3d4652;
+
+$navbar-bg: #16181b;
+$sidebar-bg: #1a1c20;
+$footer-bg: #1a1c20;
+
+$callout-color-note: #6fa8e0;
+$callout-color-tip: #5cb98a;
+$callout-color-important: #d8a840;
+$callout-color-warning: #e08a4a;
+$callout-color-caution: #e07070;
+
+$table-border-color: #34373d;
+$input-bg: #1f2227;
+$input-color: #e4e4e6;
+$dropdown-bg: #1f2227;
+$dropdown-link-color: #e4e4e6;
+$list-group-bg: #1f2227;
+$modal-content-bg: #1f2227;
+$popover-bg: #1f2227;
+$tooltip-bg: #2a2d33;

@@ -1,0 +1,329 @@
+# Mixing, Efficiency, and Monte Carlo Error {#sec-mixing}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. relate the integrated autocorrelation time, the asymptotic variance and the spectral density at frequency zero, and estimate them by batch means, spectral and initial-sequence methods;
+2. compute Monte Carlo standard errors for means, functions of means, probabilities and quantiles from MCMC output, and check their calibration;
+3. prove that thinning a chain cannot reduce the variance of an estimator based on the full chain, and identify the situations in which thinning is nonetheless justified;
+4. measure computational efficiency as effective samples per second or per gradient evaluation, and design fair comparisons of algorithms;
+5. explain how parameterisation, scaling and posterior geometry determine mixing.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-markov-chains (@prp-variance-dependent), @sec-why-clt (Markov chain CLT), @sec-diagnostics (ESS, MCSE), @sec-monte-carlo (delta method, cost).
+:::
+
+## Motivation {#sec-mix-motivation}
+
+Two samplers that both converge to the posterior can differ in efficiency by orders of magnitude. Efficiency determines what can be computed in practice: how many digits of a posterior mean are trustworthy, whether tail probabilities can be estimated at all, and whether an analysis takes a minute or a week. This chapter makes efficiency quantitative. It shows how the Monte Carlo error of MCMC averages is estimated, why thinning does not help, how to compare algorithms without fooling oneself, and why the parameterisation of a model is often the most important "tuning parameter" of all.
+
+## Definitions and notation {#sec-mix-definitions}
+
+For a stationary chain and a function $f$ with $\pi(f^2)<\infty$, recall $\gamma_k=\operatorname{Cov}(f(X_0),f(X_k))$, $\rho_k=\gamma_k/\gamma_0$, the integrated autocorrelation time $\tau_f=1+2\sum_{k\ge1}\rho_k$, and the asymptotic variance $\sigma_f^2=\gamma_0\tau_f=\lim_{N\to\infty}N\operatorname{Var}(\hat\mu_N)$ (@prp-variance-dependent).
+
+::: {#def-spectral-density}
+## Spectral density
+If $\sum_k\lvert\gamma_k\rvert<\infty$, the **spectral density** of the stationary sequence $f(X_t)$ is
+$$
+S_f(\omega)=\sum_{k=-\infty}^\infty\gamma_k e^{-i\omega k}=\gamma_0+2\sum_{k\ge1}\gamma_k\cos(\omega k),\qquad\omega\in[-\pi,\pi].
+$$
+In particular, $S_f(0)=\gamma_0+2\sum_{k\ge1}\gamma_k=\sigma_f^2$: **the asymptotic variance is the spectral density at frequency zero.**
+:::
+
+::: {#def-efficiency}
+## Computational efficiency
+For a sampler producing $N$ draws at total cost $C$ (seconds, or gradient evaluations), the **efficiency** for $f$ is $\mathrm{ESS}_f/C$, the number of effective draws per unit cost. The **inefficiency factor** $\tau_f$ is the number of iterations needed per effective draw.
+:::
+
+## Mathematical development {#sec-mix-development}
+
+### Estimating the asymptotic variance {#sec-mix-estimation}
+
+The MCSE of $\hat\mu_N$ is $\sqrt{\sigma_f^2/N}$, and $\sigma_f^2$ must be estimated from the same output. Four families of estimators are in use.
+
+1. **Initial sequence estimators** sum the empirical autocorrelations up to an adaptively chosen lag, as in @prp-geyer-sequence. `ess_chains()` and `iat()` use Geyer's initial monotone sequence.
+2. **Batch means.** Divide the chain into $a$ consecutive batches of length $b$ ($N=ab$), compute the batch means $\bar f_1,\dots,\bar f_a$, and set
+$$
+\hat\sigma^2_{\mathrm{BM}}=\frac{b}{a-1}\sum_{j=1}^a(\bar f_j-\hat\mu_N)^2.
+$$
+Each batch mean has variance approximately $\sigma_f^2/b$ when $b\gg\tau_f$, so $b$ times their sample variance estimates $\sigma_f^2$. Consistency requires $b\to\infty$ and $a\to\infty$, together with conditions on the chain (essentially a strong invariance principle, implied by geometric ergodicity plus moment conditions). The choices $b=\lfloor N^{1/2}\rfloor$ and $b=\lfloor N^{1/3}\rfloor$ are standard [@flegal2010batch]. `mcse_batch_means()` implements this.
+3. **Spectral variance estimators** weight the empirical autocovariances by a lag window, $\hat\sigma^2_{\mathrm{SV}}=\sum_{\lvert k\rvert<b}w(k/b)\hat\gamma_k$ (Bartlett, Tukey–Hanning), with similar consistency conditions [@flegal2010batch].
+4. **Autoregressive spectral estimators** fit an AR($p$) model to the output and evaluate its spectral density at zero, $\hat\sigma^2_{\mathrm{AR}}=\hat\sigma_e^2/(1-\sum_j\hat\phi_j)^2$, with $p$ chosen by AIC. This is `coda::spectrum0.ar()` and `spectrum0_ar()`. It is accurate when the output is close to an autoregressive process, and can be poor otherwise.
+
+All of them are noisy when $N$ is not much larger than $\tau_f$. An estimated ESS below about 100 is itself very uncertain. This is a fundamental reason to run long enough that the ESS is in the hundreds before trusting any error estimate.
+
+### Monte Carlo error of other estimands {#sec-mix-other-estimands}
+
+- **Probabilities** $\mathbb P_\pi(A)$: apply the above to the indicator $\mathbf 1\{f\in A\}$. Its autocorrelation time can differ greatly from that of $f$ itself. Tail events, rarely visited and slowly exited, often have large $\tau$.
+- **Quantiles**: the MCSE can be computed from the ESS of the indicator $\mathbf 1\{f\le\hat q\}$, mapped to the parameter scale through a Beta approximation (`mcse_quantile()`) [@vehtari2021rank], or from the asymptotic formula $\sqrt{\tau_{\mathbf 1}\,p(1-p)/N}\big/\pi(\xi_p)$, which needs a density estimate.
+- **Smooth functions of several means** (variances, ratios, correlations): apply the delta method (@prp-delta) with the *multivariate* asymptotic covariance matrix of the vector of chain averages, which is estimated by multivariate batch means [@vats2019multivariate].
+- **Many quantities at once**: @vats2019multivariate define a multivariate ESS from the determinant of the asymptotic covariance matrix, which gives a single stopping criterion for a vector of means.
+
+### Thinning {#sec-mix-thinning}
+
+**Thinning** keeps every $k$-th draw and discards the rest. It is widely used and widely misunderstood.
+
+::: {#prp-thinning}
+## Thinning does not reduce variance
+Let $f(X_1),\dots,f(X_N)$ come from a stationary chain with $N=kn$, and compare the full-chain average $\hat\mu=\frac1N\sum_{t=1}^Nf(X_t)$ with the thinned average $\hat\mu^{(k)}=\frac1n\sum_{j=1}^nf(X_{jk})$. Then $\operatorname{Var}(\hat\mu)\le\operatorname{Var}(\hat\mu^{(k)})$.
+:::
+
+::: {.proof}
+For $r=0,\dots,k-1$, let $\hat\mu^{(k,r)}=\frac1n\sum_{j=1}^nf(X_{jk-r})$ be the thinned average with offset $r$. By stationarity, all $k$ of these have the same variance $V=\operatorname{Var}(\hat\mu^{(k)})$, and $\hat\mu=\frac1k\sum_r\hat\mu^{(k,r)}$. Hence
+$\operatorname{Var}(\hat\mu)=\frac1{k^2}\sum_{r,s}\operatorname{Cov}(\hat\mu^{(k,r)},\hat\mu^{(k,s)})\le\frac1{k^2}\sum_{r,s}V=V$,
+since every covariance is bounded by $V$ (Cauchy–Schwarz) [@maceachern1994subsampling; @geyer1992practical].
+:::
+
+Discarding draws therefore never improves the estimate *for a given run length*. Thinning is justified only by costs other than sampling [@link2012thinning]:
+
+- **storage or memory**: a long run of a high-dimensional model may not fit in memory, and successive draws that are nearly identical add little information;
+- **expensive post-processing**: if evaluating $f$ (a posterior predictive simulation, a large prediction) costs much more than one iteration of the sampler, computing it on every $k$-th draw may give more effective draws per second (@exr-mix-4);
+- **convenience**: thinned output with a smaller autocorrelation is easier to plot and to store. That convenience must never be paid for with misleading error estimates computed as if the thinned draws were independent.
+
+### Efficiency and fair comparisons {#sec-mix-comparisons}
+
+By @eq-mc-cost, the cost of estimating $\pi(f)$ to MCSE $\epsilon$ is $\gamma_0\tau_f/\epsilon^2$ iterations, so the right figure of merit is effective draws per unit cost: ESS per second, or ESS per gradient evaluation. A fair comparison of samplers:
+
+1. **uses the same target and the same quantities of interest**, including tail quantities and the worst-mixing parameter, not only the best;
+2. **tunes each sampler comparably** (with the same adaptation budget, or each with its recommended defaults), and states how;
+3. **counts all costs**, including warm-up, gradient evaluations, and time spent in adaptation;
+4. **checks that every sampler is correct** (all agree with each other and with known answers within MCSE). A fast wrong sampler is not efficient;
+5. **replicates** over seeds and reports variability, since ESS estimates are noisy;
+6. **reports the computational environment** (hardware, software versions, number of threads), because wall-clock time is not portable. Gradient-evaluation counts are more portable but ignore differences in per-evaluation cost.
+
+Project 6 applies this protocol to Metropolis–Hastings, Gibbs sampling and HMC.
+
+### Parameterisation, scaling and geometry {#sec-mix-geometry}
+
+Mixing is determined by the geometry of the posterior *as seen by the sampler*:
+
+- **Scale heterogeneity.** If posterior standard deviations differ by a factor $\kappa$ across directions, isotropic random-walk proposals must be small enough for the narrowest direction and then move slowly in the widest. The number of iterations per effective draw grows with $\kappa^2$ for the slow directions. Standardising parameters, or estimating a mass matrix, removes this.
+- **Correlation.** A posterior concentrated along a diagonal is a scale problem in rotated coordinates. Componentwise samplers (Gibbs, single-site Metropolis) cannot exploit a rotation. Joint proposals with a matched covariance, or HMC with a dense mass matrix, can.
+- **Varying curvature.** Funnels and other geometries whose scale depends on position cannot be fixed by a global linear transformation. A *non-linear* reparameterisation, such as non-centring, can (@sec-hierarchical).
+- **Weak identification.** Ridges along which the likelihood is flat (non-identified combinations of parameters, collinear predictors) produce posteriors with long, curved directions, which are slow to explore. Informative priors or reparameterisation in terms of identified quantities help.
+
+The experiment below quantifies the first point.
+
+## Worked example: estimating Monte Carlo error {#sec-mix-worked}
+
+For an AR(1) chain with $\phi=0.9$ and unit innovations, the asymptotic variance of the mean is known exactly: $\sigma_f^2=1/(1-\phi)^2=100$. We compare estimators of it from chains of length $N=10^4$, and check the coverage of the resulting 95% Monte Carlo confidence intervals for the mean, over 500 replications.
+
+```{r}
+#| label: mix-variance-estimators
+set.seed(1801)
+phi <- 0.9; N <- 1e4; truth <- 1 / (1 - phi)^2
+est <- t(replicate(500, {
+  x <- simulate_ar1(N, phi)
+  c(naive = var(x),                                  # ignores autocorrelation
+    batch_sqrt = mcse_batch_means(x)^2 * N,          # b = sqrt(N)
+    batch_cuberoot = mcse_batch_means(x, floor(N^(1/3)))^2 * N,
+    geyer = var(x) * iat(x),
+    ar_spectral = spectrum0_ar(x),
+    mean = mean(x))
+}))
+methods <- c("naive", "batch_sqrt", "batch_cuberoot", "geyer", "ar_spectral")
+data.frame(method = methods,
+           mean_estimate = round(colMeans(est[, methods]), 1),
+           sd_estimate = round(apply(est[, methods], 2, sd), 1),
+           coverage_95 = sapply(methods, function(m) mean(abs(est[, "mean"]) <= 1.96 * sqrt(est[, m] / N))),
+           row.names = NULL)
+```
+
+The naive estimator, which treats the draws as independent, estimates about 5 instead of 100, and its intervals cover the mean only about a third of the time. All other estimators are close to the truth. Batch means with $b=N^{1/3}$ (only 21 draws per batch, comparable to $\tau_f=19$) is biased downwards and under-covers. Batch size must be large relative to the autocorrelation time. The AR estimator is excellent here, because the output *is* an AR(1) process.
+
+## R implementation {#sec-mix-r}
+
+The variance estimators used above are in `R/diagnostics/diagnostics.R` (`iat()`, `ess_chains()`, `mcse_batch_means()`, `spectrum0_ar()`), shown in @sec-diag-r. The efficiency helpers are in `R/utilities/benchmark.R`:
+
+```{r}
+#| file: R/utilities/benchmark.R
+```
+
+`efficiency_row()` reports bulk-ESS, ESS per second and ESS per 1000 evaluations, and `environment_report()` records the computing environment to accompany any timing result.
+
+## Computational experiment {#sec-mix-experiment}
+
+**Thinning.** From AR(1) chains with $\phi=0.9$ and $N=20\,000$, compare the actual variance of the full-chain mean with that of thinned means:
+
+```{r}
+#| label: mix-thinning
+set.seed(1802)
+chains <- replicate(400, simulate_ar1(20000, 0.9))
+res <- t(sapply(c(1, 2, 5, 10, 20, 50), function(k) {
+  idx <- seq(k, 20000, by = k)
+  m <- colMeans(chains[idx, , drop = FALSE])
+  c(k = k, draws_kept = length(idx), var_of_mean_x1e4 = 1e4 * var(m),
+    ess_per_kept_draw = mean(apply(chains[idx, 1:20], 2, function(z) ess_chains(z))) / length(idx))
+}))
+round(res, 3)
+```
+
+The variance of the estimate never decreases with thinning, as @prp-thinning requires. With $k=10$ it increases only slightly, because draws ten steps apart are still correlated, and the information per *stored* draw rises sharply. That trade is worth making only when storage or post-processing is the constraint.
+
+**Scale heterogeneity and ESS per second.** For a 10-dimensional Gaussian with standard deviations from 1 to $\kappa$, compare an isotropic random-walk proposal with one matched to the scales, and HMC with and without a matched mass matrix. All samplers get the same number of target or gradient evaluations.
+
+```{r}
+#| label: mix-heterogeneity
+set.seed(1803)
+d <- 10
+run_case <- function(kappa) {
+  sds <- exp(seq(0, log(kappa), length.out = d)); tg <- target_mvn(rep(0, d), diag(sds^2))
+  budget <- 40000
+  t1 <- timed(rw_metropolis(tg$log_density, rep(0, d), budget, proposal_cov = 2.38 / sqrt(d) * min(sds)))
+  t2 <- timed(rw_metropolis(tg$log_density, rep(0, d), budget, proposal_cov = 2.38^2 / d * diag(sds^2)))
+  t3 <- timed(hmc_sampler(tg$log_density, tg$grad, rep(0, d), budget / 20, step_size = 0.9 * min(sds), n_steps = 20))
+  t4 <- timed(hmc_sampler(tg$log_density, tg$grad, rep(0, d), budget / 20, step_size = 0.9, n_steps = 20, inv_mass = sds^2))
+  worst <- function(dr) min(apply(dr, 2, ess_bulk))
+  rbind(efficiency_row(t1$value$draws[, d], t1$seconds, budget, "RWM isotropic"),
+        efficiency_row(t2$value$draws[, d], t2$seconds, budget, "RWM matched"),
+        efficiency_row(t3$value$draws[, d], t3$seconds, budget, "HMC, M = I"),
+        efficiency_row(t4$value$draws[, d], t4$seconds, budget, "HMC, matched M")) |>
+    transform(kappa = kappa)
+}
+res <- rbind(run_case(1), run_case(10), run_case(100))
+res[, c("ess_bulk", "ess_per_sec", "ess_per_1000_evals")] <- round(res[, c("ess_bulk", "ess_per_sec", "ess_per_1000_evals")], 1)
+res[, c("kappa", "sampler", "ess_bulk", "ess_per_1000_evals", "ess_per_sec")]
+```
+
+The ESS is reported for the widest coordinate, which mixes most slowly. As $\kappa$ grows, the unpreconditioned samplers collapse, because their step size is limited by the narrowest direction. The preconditioned samplers are unaffected. This is the quantitative case for estimating mass matrices or proposal covariances, and for putting parameters on comparable scales. Timings refer to the following environment:
+
+```{r}
+#| label: mix-environment
+environment_report()
+```
+
+**Calibration of MCSEs for MCMC output.** Do the MCSEs reported by `mcse_mean()` from four chains of HMC output actually describe the error? For the bioassay posterior, run 100 independent four-chain HMC fits of 1000 draws per chain and compare each fit's estimate of $\mathbb E[\beta\mid y]$ with a long reference run:
+
+```{r}
+#| label: mix-mcse-calibration
+dose <- c(-0.86, -0.30, -0.05, 0.73); deaths <- c(0, 1, 3, 5)
+X <- cbind(1, rep(dose, each = 5)); y <- unlist(lapply(deaths, function(k) c(rep(1, k), rep(0, 5 - k))))
+model <- logistic_regression_model(X, y, prior_sd = 10)
+inv_m <- c(0.93, 15.2)                              # approximate posterior variances (from Chapter 15)
+set.seed(1804)
+ref <- hmc_sampler(model$log_density, model$grad, c(1, 8), 60000, 0.5, 10, inv_mass = inv_m)$draws[, 2]
+reps <- t(replicate(100, {
+  dr <- sapply(1:4, function(m) hmc_sampler(model$log_density, model$grad, c(1, 8) + rnorm(2), 1100, 0.5, 10, inv_mass = inv_m)$draws[-(1:100), 2])
+  c(estimate = mean(dr), mcse = mcse_mean(dr))
+}))
+z <- (reps[, "estimate"] - mean(ref)) / sqrt(reps[, "mcse"]^2 + mcse_mean(ref)^2)
+c(sd_of_z = sd(z), coverage_95 = mean(abs(z) < 1.96))
+```
+
+The standardised errors have a standard deviation close to 1 and the nominal intervals cover at close to the nominal rate: the MCSEs are honest for this well-behaved problem. Such calibration checks are the empirical counterpart of the CLT conditions in @thm-markov-clt.
+
+## Diagnostics and validation {#sec-mix-validation}
+
+- Cross-check the asymptotic variance with **two different estimators** (e.g. Geyer and batch means). Large disagreements indicate that $N$ is too small relative to $\tau_f$, or that the CLT is doubtful.
+- **Validate MCSEs by replication** on representative problems, as in the last experiment.
+- Report ESS for **every** quantity of interest, including indicators of tail events and the worst-mixing parameter.
+- Record the **environment** with every timing.
+
+## Interpretation {#sec-mix-interpretation}
+
+MCMC output carries less information than its length suggests, and the integrated autocorrelation time says exactly how much less. Good practice reports Monte Carlo error rather than raw run lengths, compares samplers by effective draws per unit cost, keeps the full chain for estimation (thinning only for storage or post-processing), and treats poor mixing as information about geometry to be fixed by reparameterisation or preconditioning.
+
+## Limitations and common errors {#sec-mix-errors}
+
+- **MCSE from $s/\sqrt N$** for correlated draws.
+- **Thinning "to reduce autocorrelation"** and then treating thinned draws as independent, or believing that thinning improves accuracy.
+- **Comparing samplers by ESS per iteration** while ignoring cost per iteration, or by speed while ignoring correctness.
+- **Reporting the best-mixing parameter's ESS.** Report the worst.
+- **Trusting ESS estimates below about 100.**
+- **Batch sizes comparable to $\tau_f$**, which bias batch-means estimators downwards.
+- **Wall-clock comparisons without the environment.**
+
+## Chapter summary {#sec-mix-summary}
+
+- The asymptotic variance of an MCMC average is $\sigma_f^2=\gamma_0\tau_f=S_f(0)$, the spectral density at zero (@def-spectral-density).
+- It is estimated by initial-sequence sums, batch means, lag-window spectral methods or autoregressive fits. All need $N\gg\tau_f$.
+- MCSEs extend to probabilities, quantiles and smooth functions of means, and multivariate versions exist.
+- Thinning never reduces the variance of the full-chain estimate (@prp-thinning). It is justified only by storage or post-processing costs.
+- Efficiency is effective draws per unit cost. Fair comparisons equalise targets, tuning and costs, check correctness, replicate, and report the environment.
+- Mixing is governed by geometry: scale heterogeneity and correlation are fixed by preconditioning, varying curvature by non-linear reparameterisation.
+
+## Exercises {#sec-mix-exercises}
+
+::: {#exr-mix-1}
+**[Mathematical ★]** Compute the spectral density of a stationary AR(1) process with coefficient $\phi$ and innovation variance $s^2$, and verify that $S(0)=s^2/(1-\phi)^2$.
+:::
+
+::: {#exr-mix-2}
+**[Proof ★★]** Show that the batch-means estimator with a fixed number $a$ of batches is *not* consistent for $\sigma_f^2$ as $N\to\infty$, even for i.i.d. draws. What is its limiting distribution?
+:::
+
+::: {#exr-mix-3}
+**[Mathematical ★★]** For an AR(1) chain with coefficient $\phi>0$, compute the variance of the thinned mean with thinning factor $k$ and $n$ retained draws, and show that the thinned draws form an AR(1) chain with coefficient $\phi^k$. Use this to reproduce the experiment's numbers analytically.
+:::
+
+::: {#exr-mix-4}
+**[Mathematical ★★]** Suppose each sampler iteration costs $c_s$ and each evaluation of an expensive function $f$ costs $c_f$, and the chain of $f$-values is AR(1) with coefficient $\phi$. Write the effective draws per unit cost as a function of the thinning factor $k$, and find the optimal $k$ numerically for $\phi=0.9$, $c_f/c_s\in\{0.1,1,10,100\}$.
+:::
+
+::: {#exr-mix-5}
+**[Simulation ★★]** Estimate the MCSE of the 2.5% and 97.5% posterior quantiles of $\beta$ in the bioassay model from four HMC chains, using `mcse_quantile()`, and validate the estimates by replication as in the last experiment.
+:::
+
+::: {#exr-mix-6}
+**[Critique ★★]** A methods paper claims its new sampler is "50 times faster than Stan", based on ESS per second for the posterior mean of the best-mixing parameter, on one data set, with its own sampler tuned by hand and Stan run with defaults. List the problems with this comparison and design a fair one.
+:::
+
+::: {#exr-mix-7}
+**[Research ★★★]** Implement the multivariate batch-means estimator and the multivariate ESS of @vats2019multivariate, and apply them to the eight-schools HMC output of @sec-diag-worked for the vector $(\mu,\tau,\theta_1,\dots,\theta_8)$. Compare the multivariate ESS with the minimum univariate ESS.
+:::
+
+## Further reading {#sec-mix-reading}
+
+- @geyer1992practical and @sokal1997monte: autocorrelation times, initial sequence estimators, and practical advice on run length and thinning.
+- @flegal2010batch and @flegal2008markov: batch means, spectral variance estimators and the consistency of MCSEs.
+- @vats2019multivariate: multivariate output analysis and multivariate ESS.
+- @maceachern1994subsampling and @link2012thinning: thinning.
+- @roberts2001optimal and @sherlock2010random: efficiency of Metropolis algorithms under scaling.
+- @papaspiliopoulos2007general: parameterisation and mixing in hierarchical models.
+
+## Solutions {#sec-mix-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mix-1
+$\gamma_k=\frac{s^2}{1-\phi^2}\phi^{\lvert k\rvert}$, so $S(\omega)=\frac{s^2}{1-\phi^2}\sum_k\phi^{\lvert k\rvert}e^{-i\omega k}=\frac{s^2}{1-2\phi\cos\omega+\phi^2}$. At $\omega=0$: $s^2/(1-\phi)^2$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mix-2
+With i.i.d. draws, the batch means are i.i.d. $\mathrm N(\mu,\sigma^2/b)$ (asymptotically), so $\hat\sigma^2_{\mathrm{BM}}=\frac b{a-1}\sum_j(\bar f_j-\hat\mu)^2\sim\sigma^2\chi^2_{a-1}/(a-1)$ exactly for normal data. Its variance $2\sigma^4/(a-1)$ does not shrink as $N\to\infty$ with $a$ fixed, so the estimator is not consistent. It converges in distribution to $\sigma^2\chi^2_{a-1}/(a-1)$, which is why $t_{a-1}$ critical values are used with a fixed number of batches.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mix-3
+$X_{t+k}=\phi^kX_t+\sum_{j=0}^{k-1}\phi^je_{t+k-j}$, so $(X_{jk})_j$ is AR(1) with coefficient $\phi^k$ and the same stationary variance $\gamma_0=1/(1-\phi^2)$. The variance of the mean of $n$ such draws is $\approx\frac{\gamma_0}n\frac{1+\phi^k}{1-\phi^k}$. With $n=N/k$: $\operatorname{Var}\approx\frac{k\gamma_0}N\frac{1+\phi^k}{1-\phi^k}$, which increases with $k$ and approaches $\frac{\gamma_0}N\frac{1+\phi}{1-\phi}$ at $k=1$. For $\phi=0.9$, $N=20\,000$ and $k=1$ this gives $\operatorname{Var}\approx5.26\times19/20\,000\approx0.0050$, i.e. about 50 on the $\times10^4$ scale of the table, matching the simulation.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mix-4
+For a fixed budget $C$, the number of iterations is $N=C/(c_s+c_f/k)$, the retained draws are $n=N/k$ with autocorrelation $\phi^k$, and the ESS is $n(1-\phi^k)/(1+\phi^k)$. Maximise $\frac{(1-\phi^k)/(1+\phi^k)}{k(c_s+c_f/k)}=\frac{(1-\phi^k)/(1+\phi^k)}{kc_s+c_f}$ over integer $k$. With $\phi=0.9$ the optimum is $k=4$ for $c_f/c_s=0.1$, $k=8$ for $1$, $k=17$ for $10$ and $k=32$ for $100$. Because the ESS per iteration is nearly flat in $k$ for $k$ well below $\tau_f$, even a modest cost of evaluating $f$ justifies mild thinning. This is the legitimate use of thinning: it saves *post-processing* cost, never sampling error.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mix-5
+Replicate the four-chain fit 100 times, compute `quantile(dr, c(0.025, 0.975))` and `mcse_quantile(dr, p)` each time, and compare the standard deviation of the estimates across replications with the average reported MCSE. Agreement within about 10–20% indicates calibrated MCSEs. The 97.5% quantile of $\beta$, in the long right tail, has the largest MCSE.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mix-6
+Problems: one data set, the best-mixing parameter only, asymmetric tuning effort, no check that the new sampler is correct (agreement with Stan within MCSE), possibly no account of warm-up or compilation time, and no environment details. Fair design: several models and data sets, including hard geometries; ESS per second and per gradient for the *worst* parameter and for tail quantities; both samplers with recommended defaults *and* with comparable tuning; correctness checks against each other and against known answers; repeated runs with different seeds and reported variability; full timing including warm-up; hardware and software versions.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mix-7
+Multivariate batch means: $\hat\Sigma_{\mathrm{BM}}=\frac b{a-1}\sum_j(\bar Y_j-\bar Y)(\bar Y_j-\bar Y)^\top$ for the vector output $Y_t$. The multivariate ESS is $N\big(\lvert\hat\Lambda\rvert/\lvert\hat\Sigma_{\mathrm{BM}}\rvert\big)^{1/p}$, with $\hat\Lambda$ the sample covariance. It summarises joint efficiency and typically lies between the minimum and the median of the univariate ESS values. For the centred eight-schools fit it is dominated by the poorly mixing $\tau$ direction.
+:::

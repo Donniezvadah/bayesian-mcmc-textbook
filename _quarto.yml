@@ -1,0 +1,160 @@
+project:
+  type: book
+  output-dir: _book
+  # All R chunks run with the project root as working directory, so chapters
+  # can refer to shared code as "R/samplers/..." regardless of their folder.
+  execute-dir: project
+  resources:
+    - "R/**/*.R"
+    - "stan/*.stan"
+    - "data/*.csv"
+    - "tests/testthat/*.R"
+
+execute:
+  # Computations are re-run only when a source file changes; results are
+  # stored in _freeze/ (committed) so CI and readers see the audited output.
+  freeze: auto
+  echo: true
+  message: false
+  warning: true
+
+book:
+  title: "Bayesian Statistics and Markov Chain Monte Carlo"
+  subtitle: "From Foundations to Advanced Computational Inference"
+  author: "Donnie"
+  description: >
+    An open, mathematically rigorous textbook and practical computational
+    course on Bayesian inference and Markov chain Monte Carlo, with every
+    algorithm implemented, tested and diagnosed in R.
+  date: last-modified
+  date-format: "D MMMM YYYY"
+  search: true
+  reader-mode: true
+  page-navigation: true
+  # repo-url and site-url are injected at build time by the GitHub Actions
+  # workflow (see _quarto-ci.yml generation in .github/workflows/publish.yml),
+  # so no unverified URL is hard-coded here. To set them manually, uncomment:
+  # repo-url: https://github.com/<owner>/<repository>
+  # site-url: https://<owner>.github.io/<repository>/
+  # repo-actions: [edit, issue, source]
+  sidebar:
+    style: docked
+    collapse-level: 1
+  page-footer:
+    left: "© 2026 Donnie. Text CC BY 4.0; code MIT."
+    right: "Built with [Quarto](https://quarto.org) and [R](https://www.r-project.org)."
+  chapters:
+    - index.qmd
+    - front/how-to-use.qmd
+    - front/notation.qmd
+
+    - part: "Part I: Mathematical and Computational Foundations"
+      chapters:
+        - chapters/01-probability-foundations.qmd
+        - chapters/02-mathematical-tools.qmd
+        - chapters/03-r-computing.qmd
+        - checkpoints/checkpoint-1.qmd
+
+    - part: "Part II: Bayesian Statistics from First Principles"
+      chapters:
+        - chapters/04-bayesian-paradigm.qmd
+        - chapters/05-conjugate-models.qmd
+        - chapters/06-decision-theory.qmd
+        - chapters/07-priors.qmd
+        - chapters/08-posterior-prediction.qmd
+        - checkpoints/checkpoint-2.qmd
+
+    - part: "Part III: Monte Carlo Foundations"
+      chapters:
+        - chapters/09-monte-carlo.qmd
+        - chapters/10-markov-chains.qmd
+        - chapters/11-why-mcmc-works.qmd
+        - checkpoints/checkpoint-3.qmd
+
+    - part: "Part IV: Core MCMC Algorithms"
+      chapters:
+        - chapters/12-metropolis-hastings.qmd
+        - chapters/13-gibbs-sampling.qmd
+        - chapters/14-importance-sampling.qmd
+        - chapters/15-hamiltonian-monte-carlo.qmd
+        - chapters/16-adaptive-gradient-methods.qmd
+        - checkpoints/checkpoint-4.qmd
+
+    - part: "Part V: Convergence, Diagnostics, and Reliability"
+      chapters:
+        - chapters/17-convergence-diagnostics.qmd
+        - chapters/18-mixing-efficiency.qmd
+        - chapters/19-debugging-validation.qmd
+        - checkpoints/checkpoint-5.qmd
+
+    - part: "Part VI: Bayesian Modeling in Practice"
+      chapters:
+        - chapters/20-bayesian-regression.qmd
+        - chapters/21-hierarchical-models.qmd
+        - chapters/22-time-series.qmd
+        - chapters/23-model-comparison.qmd
+        - checkpoints/checkpoint-6.qmd
+
+    - part: "Part VII: Advanced and Research-Level Topics"
+      chapters:
+        - chapters/24-advanced-mcmc-theory.qmd
+        - chapters/25-specialized-samplers.qmd
+        - chapters/26-computational-engineering.qmd
+        - chapters/27-research-frontiers.qmd
+        - checkpoints/checkpoint-7.qmd
+
+    - part: "Projects and Capstone Assessment"
+      chapters:
+        - projects/p1-coin.qmd
+        - projects/p2-normal-mean.qmd
+        - projects/p3-metropolis.qmd
+        - projects/p4-hierarchical-gibbs.qmd
+        - projects/p5-regression.qmd
+        - projects/p6-algorithm-comparison.qmd
+        - projects/p7-reproducibility-study.qmd
+        - projects/capstone.qmd
+
+    - references.qmd
+
+  appendices:
+    - appendices/distributions.qmd
+    - appendices/r-code.qmd
+    - appendices/datasets.qmd
+    - appendices/environment.qmd
+
+bibliography: references.bib
+link-citations: true
+lang: en-GB
+
+crossref:
+  exr-prefix: "Exercise"
+
+format:
+  html:
+    theme:
+      light: [cosmo, assets/css/theme-light.scss]
+      dark: [cosmo, assets/css/theme-dark.scss]
+    respect-user-color-scheme: true
+    css: assets/css/course.css
+    grid:
+      sidebar-width: 290px
+      body-width: 780px
+      margin-width: 260px
+    toc: true
+    toc-depth: 3
+    toc-title: "On this page"
+    number-sections: true
+    number-depth: 3
+    html-math-method: mathjax
+    code-copy: true
+    code-overflow: scroll
+    highlight-style: a11y
+    fig-responsive: true
+    fig-align: center
+    citations-hover: true
+    footnotes-hover: true
+    crossrefs-hover: true
+    anchor-sections: true
+    smooth-scroll: false
+    link-external-newwindow: false
+    callout-appearance: default

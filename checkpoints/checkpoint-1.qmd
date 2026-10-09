@@ -1,0 +1,90 @@
+# Checkpoint I: Foundations {#sec-checkpoint-1 .unnumbered}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+This checkpoint tests whether you can combine the material of Chapters 1–3 without guidance. Try every problem before opening the solutions. If you have trouble with a problem, reread the section it points to and attempt it again; do not move on to Part II until the derivation feels routine. Suggested time: three to four hours.
+
+## Problems {#sec-cp1-problems}
+
+**Problem 1 (probability, ★★).** Let $\Lambda\sim\mathrm{Gamma}(a,b)$ (rate $b$) and, given $\Lambda$, let $T_1,\dots,T_n$ be independent $\mathrm{Exp}(\Lambda)$ waiting times.
+(a) Derive the joint marginal density of $(T_1,\dots,T_n)$.
+(b) Show that $T_1$ and $T_2$ are positively correlated whenever $a>2$, and compute the correlation.
+(c) Derive the conditional distribution of $\Lambda$ given $T_1=t_1,\dots,T_n=t_n$.
+(See @sec-prob-joint, @thm-total-variance.)
+
+**Problem 2 (transformations, ★★).** Let $(X_1,X_2)$ be independent $\mathrm{Gamma}(\alpha_1,1)$ and $\mathrm{Gamma}(\alpha_2,1)$. Using the bivariate change of variables $S=X_1+X_2$, $B=X_1/S$, show that $B\sim\mathrm{Beta}(\alpha_1,\alpha_2)$ independently of $S\sim\mathrm{Gamma}(\alpha_1+\alpha_2,1)$. Explain how this justifies the course function `rdirichlet()`. (See @thm-change-of-variables.)
+
+**Problem 3 (Gaussian algebra, ★★).** Let $\theta\sim\mathrm N(\mu_0,\tau_0^2)$ and $y\mid\theta\sim\mathrm N(\theta,\sigma^2)$. Write the joint distribution of $(\theta,y)$ as a bivariate normal, then use @thm-gaussian-conditioning to obtain the distribution of $\theta\mid y$. Check your answer against the course function `normal_known_var_update()` for a numerical example.
+
+**Problem 4 (numerics, ★★).** You need $\log\mathbb E[e^{W}]$ where $W=\sum_{i=1}^{500}\log p(y_i\mid\theta)$ and $\theta$ is drawn from a prior: the log of a Monte Carlo estimate of a marginal likelihood. Explain why `log(mean(exp(w)))` fails for a vector `w` of simulated values, write a stable version, and state the range of $W$ values for which double precision would overflow or underflow.
+
+**Problem 5 (exact sampling, ★★★).** For the target $\tilde\pi(x)=\exp(-x^4/4)$ on $\mathbb R$:
+(a) find the smallest $M$ such that $\tilde\pi\le M\phi$ (with $\phi$ the standard normal density);
+(b) implement the rejection sampler with `rejection_sample()`, and estimate $Z=\int\tilde\pi$ from the acceptance rate, with a standard error;
+(c) compare with the exact value $Z=2\cdot4^{-3/4}\Gamma(1/4)$, which you should derive.
+
+**Problem 6 (testing, ★★).** Write a `testthat` test file for your solution to Problem 5 that checks: an error for invalid input, the agreement of $\mathbb E[X^2]$ with its exact value $4^{1/2}\Gamma(3/4)/\Gamma(1/4)$ within four Monte Carlo standard errors, and the acceptance rate against $Z/M$.
+
+## Solutions {#sec-cp1-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 1
+(a) $p(t_{1:n})=\int_0^\infty\lambda^ne^{-\lambda s}\frac{b^a\lambda^{a-1}e^{-b\lambda}}{\Gamma(a)}d\lambda=\frac{\Gamma(a+n)}{\Gamma(a)}\frac{b^a}{(b+s)^{a+n}}$, with $s=\sum_it_i$ and all $t_i>0$.
+(b) $\mathbb E[T\mid\Lambda]=1/\Lambda$, $\operatorname{Var}(T\mid\Lambda)=1/\Lambda^2$. For $\Lambda\sim\mathrm{Gamma}(a,b)$, $\mathbb E[\Lambda^{-1}]=b/(a-1)$ for $a>1$ and $\mathbb E[\Lambda^{-2}]=b^2/\{(a-1)(a-2)\}$ for $a>2$. By @prp-ci-not-independence, $\operatorname{Cov}(T_1,T_2)=\operatorname{Var}(1/\Lambda)=\frac{b^2}{(a-1)^2(a-2)}>0$. Also $\operatorname{Var}(T_1)=\mathbb E[\Lambda^{-2}]+\operatorname{Var}(\Lambda^{-1})=\frac{b^2}{(a-1)(a-2)}+\frac{b^2}{(a-1)^2(a-2)}=\frac{ab^2}{(a-1)^2(a-2)}$, so $\operatorname{Cor}(T_1,T_2)=1/a$.
+(c) $p(\lambda\mid t_{1:n})\propto\lambda^{a+n-1}e^{-(b+s)\lambda}$, i.e. $\mathrm{Gamma}(a+n,b+s)$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 2
+The inverse map is $x_1=bs$, $x_2=(1-b)s$, with Jacobian determinant $\lvert\partial(x_1,x_2)/\partial(b,s)\rvert=\lvert s\cdot(1-b)-b\cdot(-s)\rvert=s$. Hence
+$p(b,s)=\frac{(bs)^{\alpha_1-1}e^{-bs}}{\Gamma(\alpha_1)}\frac{((1-b)s)^{\alpha_2-1}e^{-(1-b)s}}{\Gamma(\alpha_2)}s=\frac{b^{\alpha_1-1}(1-b)^{\alpha_2-1}}{B(\alpha_1,\alpha_2)}\cdot\frac{s^{\alpha_1+\alpha_2-1}e^{-s}}{\Gamma(\alpha_1+\alpha_2)}$,
+which factorises into a $\mathrm{Beta}(\alpha_1,\alpha_2)$ density in $b$ and a $\mathrm{Gamma}(\alpha_1+\alpha_2,1)$ density in $s$. The same argument with $K$ components shows that $(X_1,\dots,X_K)/\sum_kX_k\sim\mathrm{Dir}(\alpha)$ when $X_k\sim\mathrm{Gamma}(\alpha_k,1)$ independently, which is exactly what `rdirichlet()` computes.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 3
+$(\theta,y)$ is bivariate normal with mean $(\mu_0,\mu_0)$, $\operatorname{Var}\theta=\tau_0^2$, $\operatorname{Var}y=\tau_0^2+\sigma^2$, $\operatorname{Cov}(\theta,y)=\tau_0^2$. By @thm-gaussian-conditioning, $\theta\mid y\sim\mathrm N\big(\mu_0+\frac{\tau_0^2}{\tau_0^2+\sigma^2}(y-\mu_0),\ \tau_0^2-\frac{\tau_0^4}{\tau_0^2+\sigma^2}\big)$. The variance simplifies to $(1/\tau_0^2+1/\sigma^2)^{-1}$ and the mean to $(\mu_0/\tau_0^2+y/\sigma^2)/(1/\tau_0^2+1/\sigma^2)$.
+```{r}
+#| eval: false
+normal_known_var_update(y = 2.3, sigma2 = 4, m0 = 0, v0 = 1)   # mean 0.46, var 0.8
+```
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 4
+$W$ is a sum of 500 log densities, typically of order $-10^3$, and $e^{-1000}$ underflows to zero (the smallest double is about $e^{-745}$), so `exp(w)` is all zeros and the log is `-Inf`. Values $W\gtrsim709$ overflow to `Inf`. The stable version is `log_mean_exp(w)` $=\max(w)+\log\{\frac1S\sum_s e^{w_s-\max(w)}\}$ (@prp-logsumexp), which works for any finite $w$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 5
+(a) $\log\tilde\pi-\log\phi=-x^4/4+x^2/2+\tfrac12\log(2\pi)$ is maximised at $x^2=1$, where it equals $1/4+\tfrac12\log(2\pi)$. So $M=\sqrt{2\pi}e^{1/4}$.
+(b), (c) With the substitution $u=x^4/4$, $Z=2\int_0^\infty e^{-x^4/4}dx=2\cdot4^{-3/4}\Gamma(1/4)\approx2.5637$. The acceptance rate is $Z/M\approx0.796$, so $\hat Z=M\times\widehat{\text{rate}}$. Treating the number of acceptances among $N$ proposals as binomial, $\operatorname{se}(\hat Z)=M\sqrt{r(1-r)/N}$.
+```{r}
+#| eval: false
+lM <- 0.25 + 0.5 * log(2 * pi)
+out <- rejection_sample(1e5, function(x) -x^4 / 4, rnorm, function(x) dnorm(x, log = TRUE), lM)
+r <- out$acceptance_rate; N <- out$n_proposed
+c(Z_hat = exp(lM) * r, se = exp(lM) * sqrt(r * (1 - r) / N), Z_exact = 2 * 4^(-3/4) * gamma(1/4))
+```
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 6
+By the substitution $u=x^4/4$, $\int x^2e^{-x^4/4}dx=2\cdot4^{-1/4}\Gamma(3/4)$, so $\mathbb E[X^2]=4^{1/2}\Gamma(3/4)/\Gamma(1/4)\approx0.6760$.
+```{r}
+#| eval: false
+test_that("quartic-exponential rejection sampler", {
+  lM <- 0.25 + 0.5 * log(2 * pi)
+  lt <- function(x) -x^4 / 4
+  expect_error(rejection_sample(0, lt, rnorm, function(x) dnorm(x, log = TRUE), lM))
+  out <- with_seed(1, rejection_sample(1e5, lt, rnorm, function(x) dnorm(x, log = TRUE), lM))
+  ex2 <- 2 * gamma(3/4) / gamma(1/4)
+  expect_within_mcse(mean(out$draws^2), ex2, sd(out$draws^2) / sqrt(1e5))
+  Z <- 2 * 4^(-3/4) * gamma(1/4); r <- out$acceptance_rate
+  expect_within_mcse(r, Z / exp(lM), sqrt(r * (1 - r) / out$n_proposed))
+})
+```
+:::

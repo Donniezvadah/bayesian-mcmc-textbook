@@ -1,0 +1,449 @@
+# Statistical Computing with R {#sec-r-computing}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. use R's core data structures (atomic vectors, matrices, lists, data frames) and functions, including closures, to represent models and samplers;
+2. explain how pseudo-random numbers are generated in R, and what a seed does and does not guarantee;
+3. prove that inverse-transform and rejection sampling produce exact draws, and implement both;
+4. write vectorised, preallocated code and predict its computational cost;
+5. use R's tools for numerical integration, optimisation and plotting (base graphics and `ggplot2`);
+6. test statistical code with `testthat`, choosing tolerances based on Monte Carlo error;
+7. organise a computational project so that it can be reproduced by someone else.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-probability (distributions, change of variables) and @sec-math-tools (log-scale arithmetic). Programming experience in any language. No previous R is assumed.
+:::
+
+## Motivation {#sec-r-motivation}
+
+Every method in this book is ultimately a program. A sampler with a sign error in its acceptance ratio still produces numbers, and they still look plausible. Correct statistical software is therefore not a matter of style: it requires explicit inputs and outputs, numerical care, and above all **tests that compare output with known answers**, using tolerances that account for randomness. This chapter teaches the R needed for the rest of the book and the habits that make computational results trustworthy. It also proves the two most basic exact sampling methods, which the later MCMC algorithms generalise.
+
+## Definitions and notation {#sec-r-definitions}
+
+**Objects.** Everything in R is an object. The basic object is the *atomic vector*: an ordered collection of elements of one type (`logical`, `integer`, `double`, `character`). A scalar is a vector of length one. A *matrix* is a vector with a `dim` attribute. A *list* holds elements of arbitrary types. A *data frame* is a list of equal-length columns. Missing values are `NA`; the results of undefined arithmetic are `NaN` (e.g. `0/0`) and `Inf`/`-Inf` (e.g. `log(0)`).
+
+```{r}
+#| label: r-objects
+x <- c(2.5, 0, -1)                    # double vector
+m <- matrix(1:6, nrow = 2)            # integer matrix, filled by column
+lst <- list(name = "draws", value = x, settings = list(seed = 1))
+df <- data.frame(theta = c(0.1, 0.5), logp = c(-2.3, -0.7))
+str(lst); dim(m); df$logp
+c(log(0), 0 / 0, 1 / 0)               # -Inf, NaN, Inf
+```
+
+**Functions** are objects too. They can be passed as arguments and returned as values. A function created inside another function keeps access to the variables of its creator. This is a **closure**, and it is how the course represents models: a constructor such as `target_normal()` returns a list of functions that "remember" the parameters.
+
+```{r}
+#| label: r-closure
+make_log_density <- function(mu, sigma) {
+  function(x) dnorm(x, mu, sigma, log = TRUE)   # mu and sigma are captured
+}
+ld <- make_log_density(3, 2)
+ld(c(1, 3, 5))
+```
+
+**Random variates.** For each standard distribution R provides `d`, `p`, `q` and `r` functions: density (or mass), CDF, quantile and random generation. Check parameterisations against the [notation page](../front/notation.qmd), and name arguments such as `rate =` and `sd =` explicitly.
+
+## Mathematical development {#sec-r-development}
+
+### Pseudo-random numbers {#sec-r-prng}
+
+A computer cannot produce random numbers. A **pseudo-random number generator (PRNG)** is a deterministic map $s_{k+1}=T(s_k)$ on a large finite state space, together with an output function $u_k=G(s_k)\in(0,1)$, designed so that the sequence $(u_k)$ passes stringent statistical tests of independence and uniformity. R's default generator is the Mersenne Twister, with period $2^{19937}-1$ and good equidistribution in up to 623 dimensions [@matsumoto1998mersenne]. `set.seed(k)` initialises the state deterministically from the integer `k`, so the same program with the same seed reproduces the same sequence.
+
+::: {.callout-important}
+## What a seed does not guarantee
+A seed reproduces results only **with the same generator, the same algorithm for converting uniforms into the desired distribution, and the same sequence of calls**. Any of these can change between R versions. R 3.6.0, for example, changed the default algorithm used by `sample()`, which altered results produced under the same seed. Package updates and changes of platform or BLAS can change floating-point results too. Report the software environment (as in [Appendix D](../appendices/environment.qmd)) and make sure conclusions hold within Monte Carlo error across seeds. A result that holds for only one seed is not a result.
+:::
+
+For parallel computation, independent streams are needed. Seeding each worker with a different integer does not guarantee non-overlapping sequences. R's `parallel` package provides the L'Ecuyer-CMRG generator with provably separated streams [@lecuyer2002object]; we use it in @sec-engineering.
+
+### Inverse-transform sampling {#sec-r-inverse}
+
+For a distribution function $F$ define the generalised inverse $F^{-1}(u)=\inf\{x:F(x)\ge u\}$ for $u\in(0,1)$.
+
+::: {#thm-inverse-transform}
+## Inverse-transform sampling
+If $U\sim\mathrm U(0,1)$ then $X=F^{-1}(U)$ has distribution function $F$.
+:::
+
+::: {.proof}
+Because $F$ is non-decreasing and right-continuous, $F^{-1}(u)\le x$ if and only if $u\le F(x)$. (If $u\le F(x)$ then $x$ belongs to the set whose infimum defines $F^{-1}(u)$, so $F^{-1}(u)\le x$. Conversely, if $F^{-1}(u)\le x$ then, by right-continuity, $F(F^{-1}(u))\ge u$, and monotonicity gives $F(x)\ge u$.) Hence $\mathbb P(X\le x)=\mathbb P(U\le F(x))=F(x)$.
+:::
+
+The theorem covers discrete distributions too, where $F^{-1}$ is a step function. Examples: $\mathrm{Exp}(\lambda)$ via $X=-\log(1-U)/\lambda$, and Cauchy via $X=\tan\{\pi(U-\tfrac12)\}$. The method needs a computable quantile function, which most posteriors do not have.
+
+### Rejection sampling {#sec-r-rejection}
+
+Rejection sampling [@devroye1986nonuniform, Chapter II] needs only an unnormalised target $\tilde\pi$ and a proposal density $g$ that we can sample, satisfying an **envelope** condition.
+
+::: {#thm-rejection}
+## Rejection sampling
+Let $\pi=\tilde\pi/Z$ be a density, $g$ a density, and $M<\infty$ a constant with $\tilde\pi(x)\le Mg(x)$ for all $x$. Repeat: draw $X\sim g$ and $U\sim\mathrm U(0,1)$ independently, until $U\le\tilde\pi(X)/\{Mg(X)\}$; output $X$. Then the output has density $\pi$, each proposal is accepted with probability $Z/M$, and successive outputs are independent.
+:::
+
+::: {.proof}
+For one proposal and any set $A$,
+$$
+\mathbb P\Big(X\in A,\ U\le\tfrac{\tilde\pi(X)}{Mg(X)}\Big)=\int_A g(x)\frac{\tilde\pi(x)}{Mg(x)}\,dx=\frac{Z}{M}\int_A\pi(x)\,dx,
+$$
+using $0\le\tilde\pi/(Mg)\le1$ so that the conditional acceptance probability given $X=x$ is exactly $\tilde\pi(x)/\{Mg(x)\}$. Taking $A$ to be the whole space gives the acceptance probability $Z/M$, and dividing gives $\mathbb P(X\in A\mid\text{accept})=\int_A\pi$. Proposals are independent, so the number of trials until acceptance is geometric with mean $M/Z$ and the accepted values are independent draws from $\pi$.
+:::
+
+::: {.callout-tip}
+## Intuition
+Draw points uniformly under the curve $Mg$ (choose $X\sim g$, then a height $UMg(X)$) and keep those that also lie under $\tilde\pi$. The kept points are uniform under $\tilde\pi$, so their $x$-coordinates have density $\pi$. The wasted fraction is the area between the curves.
+:::
+
+**A Bayesian special case.** For a posterior $\tilde\pi(\theta)=L(\theta)\pi(\theta)$, take the prior as proposal, $g=\pi$, and $M=L(\hat\theta)$, the maximised likelihood. The envelope holds because $L(\theta)\le L(\hat\theta)$, and the acceptance probability is $L(\theta)/L(\hat\theta)$ [@smith1992bayesian]. The acceptance rate $p(y)/L(\hat\theta)$ is small when the data are informative relative to the prior, and in $d$ dimensions it typically decays exponentially in $d$. Rejection sampling, like quadrature, is a low-dimensional method. Its value here is that it is *exact*, which makes it a perfect reference for testing other samplers.
+
+### Computational cost and vectorisation {#sec-r-cost}
+
+R is an interpreted language. A loop that executes $n$ cheap operations pays interpreter overhead $n$ times, while a vectorised call such as `sum(dnorm(x, log = TRUE))` runs the loop in compiled C. The asymptotic cost $O(n)$ is the same; the constant differs by one to two orders of magnitude. Two rules matter most:
+
+1. **Preallocate** output (`draws <- numeric(n_iter)`) instead of growing it (`draws <- c(draws, x)`). Growing copies the whole vector at each step, so total cost is $O(n^2)$.
+2. **Vectorise the arithmetic, not the algorithm.** An MCMC chain is inherently sequential, because iteration $t$ depends on iteration $t-1$, so its loop cannot be vectorised away. What can be vectorised is the log-density evaluation *inside* each iteration (a sum over $n$ data points).
+
+## Worked example: an exact posterior by rejection sampling {#sec-r-worked}
+
+A trial records $y=7$ responses among $n=20$ patients. Earlier studies suggest the log-odds of response is around 0 with standard deviation 1.5, so we use the non-conjugate prior $\operatorname{logit}\theta\sim\mathrm N(0,1.5^2)$. By @thm-change-of-variables its density on $(0,1)$ is
+$$
+\pi(\theta)=\frac{1}{\theta(1-\theta)}\cdot\frac{1}{1.5}\,\phi\Big(\frac{\operatorname{logit}\theta}{1.5}\Big).
+$$
+The posterior $\pi(\theta\mid y)\propto\binom{20}{7}\theta^7(1-\theta)^{13}\pi(\theta)$ has no closed form. We sample it exactly with the prior as envelope.
+
+**Step 1: the envelope constant.** The binomial likelihood is maximised at $\hat\theta=7/20$, so $\log M=\log\binom{20}{7}+7\log0.35+13\log0.65$.
+
+**Step 2: sample.**
+
+```{r}
+#| label: r-worked-rejection
+y <- 7; n <- 20; s <- 1.5
+log_prior <- function(t) dnorm(qlogis(t), 0, s, log = TRUE) - log(t) - log1p(-t)
+log_lik <- function(t) dbinom(y, n, t, log = TRUE)
+set.seed(301)
+out <- rejection_sample(
+  n = 2e4,
+  log_target = function(t) log_lik(t) + log_prior(t),
+  r_proposal = function(k) plogis(rnorm(k, 0, s)),    # draws from the prior
+  log_proposal = log_prior,
+  log_M = log_lik(y / n))
+c(acceptance_rate = out$acceptance_rate, posterior_mean = mean(out$draws),
+  mcse = sd(out$draws) / sqrt(length(out$draws)))
+```
+
+**Step 3: validate against a grid.** The draws are independent, so their Monte Carlo standard error is $s/\sqrt S$. The grid answer comes from @sec-math-tools.
+
+```{r}
+#| label: r-worked-grid
+g <- seq(1e-6, 1 - 1e-6, length.out = 4001)
+gp <- grid_posterior(log_lik(g) + log_prior(g), g)
+mean_grid <- simpson(g * gp$density, g)
+c(grid_mean = mean_grid, z = (mean(out$draws) - mean_grid) / (sd(out$draws) / sqrt(2e4)),
+  acceptance_theory = exp(gp$log_normalising_constant - log_lik(y / n)))
+```
+
+The theoretical acceptance rate $Z/M$ (with $Z=p(y)$ computed on the grid) matches the observed rate, and the posterior mean agrees with the grid within Monte Carlo error.
+
+## R implementation {#sec-r-implementation}
+
+The course's exact samplers are in `R/samplers/basic-sampling.R`:
+
+```{r}
+#| file: R/samplers/basic-sampling.R
+```
+
+Three design decisions illustrate the conventions used throughout the course:
+
+- **Inputs are validated** with small helpers from `R/utilities/validation.R` (`check_count()`, `check_function()`, ...), so that mistakes fail immediately with a clear message.
+- **The algorithm runs on the log scale.** The acceptance test $\log U<\log\tilde\pi(x)-\log g(x)-\log M$ cannot underflow.
+- **The function checks its own assumption.** If any proposal violates the envelope, the output would silently follow the wrong distribution, so the function stops instead. Code that checks the assumptions of the theorem it implements is worth the extra lines.
+
+### Plotting {#sec-r-plotting}
+
+Base graphics are concise and dependency-free, and most figures in this book use them. The `ggplot2` package [@wickham2016ggplot2] builds plots from a data frame by mapping variables to aesthetics and adding layers, which scales better to complex multi-panel graphics. The same comparison of draws with the grid posterior in each system:
+
+```{r}
+#| label: fig-r-two-plots
+#| fig-cap: "Rejection-sampling draws (histogram) and the grid posterior (curve), in base graphics (left) and ggplot2 (right)."
+#| fig-height: 3.4
+#| layout-ncol: 2
+hist_density(out$draws, xlab = expression(theta), breaks = 60)
+lines(g, gp$density, col = course_cols[["orange"]], lwd = 2)
+
+library(ggplot2)
+ggplot(data.frame(theta = out$draws), aes(theta)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 60, fill = course_fill, colour = "white") +
+  geom_line(data = data.frame(theta = g, density = gp$density), aes(theta, density),
+            colour = course_cols[["orange"]], linewidth = 1) +
+  labs(x = expression(theta), y = "density") +
+  theme_minimal(base_size = 12)
+```
+
+### Numerical integration and optimisation in base R {#sec-r-numerics}
+
+`integrate()` performs adaptive Gauss–Kronrod quadrature in one dimension and reports an error estimate. `optim()` offers several optimisers. `optimize()` handles one-dimensional problems on an interval.
+
+```{r}
+#| label: r-integrate-optim
+post_unnorm <- function(t) exp(log_lik(t) + log_prior(t))
+Z <- integrate(post_unnorm, 0, 1)
+Z                                                      # value and error estimate
+mode <- optimize(function(t) log_lik(t) + log_prior(t), c(0.01, 0.99), maximum = TRUE)$maximum
+c(log_Z_integrate = log(Z$value), log_Z_grid = gp$log_normalising_constant, posterior_mode = mode)
+```
+
+`integrate()` can fail silently for integrands concentrated in a tiny part of a long or infinite interval. Check its output against a second method whenever the answer matters.
+
+## Computational experiment: cost, vectorisation and reproducibility {#sec-r-experiment}
+
+**Vectorisation.** We evaluate a normal log-likelihood with $n=10^4$ observations at 200 parameter values, with an explicit double loop and with a vectorised inner sum. Timings depend on the machine; the ratio is what matters.
+
+```{r}
+#| label: r-vectorisation
+set.seed(302)
+yy <- rnorm(1e4, 1, 2)
+mus <- seq(0, 2, length.out = 200)
+loop_version <- function() {
+  out <- numeric(length(mus))
+  for (j in seq_along(mus)) {
+    total <- 0
+    for (i in seq_along(yy)) total <- total + dnorm(yy[i], mus[j], 2, log = TRUE)
+    out[j] <- total
+  }
+  out
+}
+vector_version <- function() vapply(mus, function(m) sum(dnorm(yy, m, 2, log = TRUE)), numeric(1))
+t_loop <- system.time(a <- loop_version())[["elapsed"]]
+t_vec <- system.time(b <- vector_version())[["elapsed"]]
+c(identical_results = isTRUE(all.equal(a, b)), seconds_loop = t_loop, seconds_vectorised = t_vec,
+  speed_up = round(t_loop / max(t_vec, 1e-3)))
+```
+
+**Growing versus preallocating.**
+
+```{r}
+#| label: r-preallocation
+grow <- function(n) { v <- c(); for (i in 1:n) v <- c(v, i); v }
+prealloc <- function(n) { v <- numeric(n); for (i in 1:n) v[i] <- i; v }
+sapply(c(5e3, 1e4, 2e4), function(n)
+  c(n = n, grow = system.time(grow(n))[["elapsed"]], prealloc = system.time(prealloc(n))[["elapsed"]]))
+```
+
+The cost of growing roughly quadruples when $n$ doubles, as $O(n^2)$ predicts. Preallocation stays negligible.
+
+**Reproducibility.** Identical seeds give identical draws in the same environment, and draws from different seeds differ. *Conclusions* should not depend on the seed: here the estimated posterior mean varies across seeds only by about its Monte Carlo standard error.
+
+```{r}
+#| label: r-seeds
+run <- function(seed) with_seed(seed, mean(rejection_sample(5000, function(t) log_lik(t) + log_prior(t),
+  function(k) plogis(rnorm(k, 0, s)), log_prior, log_lik(y / n))$draws))
+c(same_seed_identical = identical(run(1), run(1)))
+means <- sapply(1:20, run)
+c(sd_across_seeds = sd(means), predicted_mcse = sd(out$draws) / sqrt(5000))
+```
+
+## Diagnostics and validation: testing statistical code {#sec-r-testing}
+
+Statistical code needs two kinds of test [@wickham2011testthat; @wilson2014best].
+
+1. **Deterministic tests** check exact properties: input validation errors, output dimensions, identities such as "the pmf sums to one", agreement of an analytic gradient with finite differences.
+2. **Stochastic tests** check distributional properties of random output. They must use a tolerance derived from Monte Carlo error. Too tight and correct code fails at random; too loose and wrong code passes. The course helper `expect_within_mcse(estimate, truth, mcse, k = 4)` passes if the error is within $k$ standard errors. For an approximately normal estimator, a correct implementation then fails with probability about $6\times10^{-5}$ per check. With a fixed seed the test is deterministic, and with *changing* seeds a correct implementation still almost never fails.
+
+The tests for the exact samplers:
+
+```{r}
+#| file: tests/testthat/test-basic-sampling.R
+#| eval: false
+```
+
+Running them (the full suite of about 190 tests runs with `Rscript tests/run-tests.R`):
+
+```{r}
+#| label: r-run-tests
+#| message: true
+testthat::test_dir("tests/testthat", filter = "basic-sampling", reporter = "summary")
+```
+
+### Organising a reproducible project {#sec-r-project}
+
+The repository of this book follows a layout that works well for any computational study [@wilson2017good; @marwick2018packaging]:
+
+```text
+R/            reusable functions (samplers, models, diagnostics, utilities)
+tests/        automated tests of everything in R/
+chapters/     documents that *use* the functions; no function definitions
+data/         raw data plus a README with provenance and licence
+scripts/      one-off tasks (e.g. verifying references)
+DESCRIPTION   the packages the project depends on
+```
+
+Further practices: keep raw data read-only; use relative paths from the project root, never `setwd()` with an absolute path; document functions with comment headers in the `roxygen` style (`#' @param ...`), which tools such as `roxygen2` turn into help pages if the code becomes a package [@wickham2023packages]; and record package versions. The `renv` package snapshots exact package versions into a lockfile so that another user can restore the same environment with `renv::restore()`.
+
+## Interpretation {#sec-r-interpretation}
+
+The worked example produced 20 000 *exact, independent* posterior draws for a non-conjugate model. In one dimension this is easy. The acceptance rate (a little over one proposal in four here) shows what goes wrong in harder problems: with a more informative likelihood or more parameters, the envelope would be poor and almost every proposal would be rejected. That is the motivation for the Markov chain methods of Part IV, which give up independence in exchange for scalability.
+
+## Limitations and common errors {#sec-r-errors}
+
+- **`1:length(x)` when `x` is empty** gives `c(1, 0)`. Use `seq_along(x)` or `seq_len(n)`.
+- **`sample(x, 1)` when `length(x) == 1`** samples from `1:x` if `x` is a positive number, not from the one-element vector. Use `x[sample.int(length(x), 1)]`.
+- **Comparing floating-point numbers with `==`**: `0.1 + 0.2 == 0.3` is `FALSE`. Use `isTRUE(all.equal(a, b))` or an explicit tolerance.
+- **Silent recycling**: `c(1, 2, 3) + c(10, 20)` warns, but `c(1, 2, 3, 4) + c(10, 20)` silently recycles.
+- **Partial matching with `$`** on lists: `lst$val` returns `lst$value`. The course enables a warning for this (`options(warnPartialMatchDollar = TRUE)`).
+- **Calling `set.seed()` inside a function** that is used in a larger simulation makes every call produce the same random numbers. Set the seed once, at the top level, or use `with_seed()`, which restores the previous state.
+- **Using a rejection sampler with an invalid envelope.** If $\tilde\pi>Mg$ somewhere, the output is biased and nothing in the output reveals it. Check the condition, as `rejection_sample()` does.
+- **Stochastic tests with arbitrary tolerances** ("within 0.01"), which are either flaky or toothless.
+
+## Chapter summary {#sec-r-summary}
+
+- R represents data as vectors, matrices, lists and data frames, and represents models naturally as closures: functions that capture their parameters.
+- Pseudo-random numbers are deterministic sequences. Seeds reproduce them only in a fixed software environment, so conclusions must be robust across seeds.
+- Inverse-transform sampling (@thm-inverse-transform) and rejection sampling (@thm-rejection) produce exact independent draws. Rejection sampling needs an envelope and has acceptance rate $Z/M$.
+- Vectorise inner computations, preallocate outputs, and expect sequential algorithms such as MCMC to need explicit loops.
+- Test statistical code with deterministic tests and with stochastic tests whose tolerances come from Monte Carlo standard errors.
+- A clear project layout, recorded package versions and relative paths make computational work reproducible.
+
+## Exercises {#sec-r-exercises}
+
+::: {#exr-r-1}
+**[R ★]** Using inverse-transform sampling, write `rcauchy_inv(n, location, scale)` and check it against `pcauchy()` with a Kolmogorov–Smirnov test. Then compute the running mean of $10^5$ draws and plot it. What happens, and why does the law of large numbers not apply?
+:::
+
+::: {#exr-r-2}
+**[Proof ★★]** Prove that inverse-transform sampling with the generalised inverse produces the correct distribution for a discrete random variable taking values $x_1<x_2<\dots$ with probabilities $p_1,p_2,\dots$, and write the resulting sampling algorithm explicitly.
+:::
+
+::: {#exr-r-3}
+**[Mathematical ★★]** To sample the standard half-normal density $p(x)=\sqrt{2/\pi}\,e^{-x^2/2}$ on $x>0$ by rejection from $g(x)=\lambda e^{-\lambda x}$, find the smallest valid $M(\lambda)$ and the $\lambda$ that maximises the acceptance probability. What is that probability?
+:::
+
+::: {#exr-r-4}
+**[R ★★]** Implement the sampler of @exr-r-3 with `rejection_sample()`, verify its acceptance rate against your formula, and test the output against the half-normal distribution in a `testthat` test with a tolerance based on Monte Carlo error.
+:::
+
+::: {#exr-r-5}
+**[Simulation ★★]** In the worked example, replace the data by $y=70$, $n=200$, and then by $y=700$, $n=2000$, keeping the same prior. Predict how the acceptance rate scales with $n$ (hint: the posterior standard deviation shrinks like $n^{-1/2}$ while the prior does not change), and check your prediction.
+:::
+
+::: {#exr-r-6}
+**[R ★]** Explain the output of each line, then fix the bug in the last one:
+```r
+x <- numeric(0); for (i in 1:length(x)) print(i)
+sample(5, 1); sample(c(5), 1)
+0.1 * 3 == 0.3
+```
+:::
+
+::: {#exr-r-7}
+**[Conceptual ★★]** A colleague's simulation study sets `set.seed(2024)` inside the function that generates each data set, then runs it 1000 times in a loop. What is wrong with the results, and how would you fix it so that the study is still reproducible?
+:::
+
+::: {#exr-r-8}
+**[R ★★]** Write a closure-based constructor `make_binomial_posterior(y, n, log_prior)` that returns a list with `log_density`, `draw(k)` (rejection sampling with the prior as envelope, given a function to sample the prior) and `acceptance_rate()`. Use it to reproduce the worked example.
+:::
+
+::: {#exr-r-9}
+**[Critique ★★]** A unit test for a sampler checks `expect_equal(mean(draws), 0, tolerance = 0.01)` with `draws` of length 1000 from a target with standard deviation 1. Is this a good test? Compute the probability that a correct sampler producing independent draws fails it, and propose a better test.
+:::
+
+::: {#exr-r-10}
+**[Research ★★★]** Adaptive rejection sampling [@gilks1992adaptive] builds an envelope for log-concave densities from tangent lines to $\log\tilde\pi$, refining it each time a point is rejected. Read the paper, implement a version for univariate log-concave targets, and compare its acceptance rate with a fixed envelope for the Gamma(5,1) density.
+:::
+
+## Further reading {#sec-r-reading}
+
+- @wickham2019advanced: R's object system, environments, closures and functional programming.
+- @devroye1986nonuniform: the definitive reference on generating random variates, including inverse-transform and rejection methods.
+- @matsumoto1998mersenne and @lecuyer2002object: the default R generator and parallel streams.
+- @wickham2011testthat and @wickham2023packages: testing and packaging R code.
+- @wilson2014best, @wilson2017good, @sandve2013ten and @marwick2018packaging: practices for reproducible scientific computing.
+
+## Solutions {#sec-r-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-1
+`rcauchy_inv <- function(n, location = 0, scale = 1) location + scale * tan(pi * (runif(n) - 0.5))`. The KS test should not reject. The running mean does not settle down: it jumps every time an extreme draw occurs. The Cauchy distribution has no mean ($\mathbb E\lvert X\rvert=\infty$), so the strong law of large numbers, which requires a finite first absolute moment, does not apply. The sample mean of $n$ Cauchy draws is itself standard Cauchy, whatever $n$ is.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-2
+$F$ is the step function $F(x)=\sum_{k:x_k\le x}p_k$, so $F^{-1}(u)=x_k$ exactly when $F(x_{k-1})<u\le F(x_k)$ (with $F(x_0)=0$), an interval of length $p_k$. Hence $\mathbb P(F^{-1}(U)=x_k)=p_k$. Algorithm: draw $U$; find the smallest $k$ with $\sum_{j\le k}p_j\ge U$; return $x_k$. In R: `x[findInterval(u, cumsum(p), left.open = TRUE) + 1]`.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-3
+$p(x)/g(x)=\sqrt{2/\pi}\lambda^{-1}e^{-x^2/2+\lambda x}$ is maximised at $x=\lambda$, so $M(\lambda)=\sqrt{2/\pi}\lambda^{-1}e^{\lambda^2/2}$. Since $Z=1$, the acceptance probability is $1/M(\lambda)$, maximised by minimising $\log M=-\log\lambda+\lambda^2/2$: $\lambda=1$. Then $M=\sqrt{2e/\pi}\approx1.315$ and the acceptance probability is about $0.760$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-4
+```{r}
+#| eval: false
+lM <- 0.5 * log(2 / pi) + 0.5
+out <- rejection_sample(1e5, function(x) 0.5 * log(2 / pi) - x^2 / 2, rexp,
+                        function(x) dexp(x, log = TRUE), lM)
+out$acceptance_rate                      # about 0.760
+test_that("half-normal by rejection", {
+  expect_within_mcse(mean(out$draws), sqrt(2 / pi), sd(out$draws) / sqrt(1e5))
+  expect_within_mcse(mean(out$draws^2), 1, sd(out$draws^2) / sqrt(1e5))
+})
+```
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-5
+The acceptance rate is $p(y)/L(\hat\theta)=\int\{L(\theta)/L(\hat\theta)\}\pi(\theta)\,d\theta$. For large $n$ the ratio $L/L(\hat\theta)$ is approximately a Gaussian bump of width $\propto n^{-1/2}$ and height 1, so the integral is about $\pi(\hat\theta)\sqrt{2\pi\hat\theta(1-\hat\theta)/n}$. The acceptance rate scales like $n^{-1/2}$: increasing $n$ tenfold divides it by about $\sqrt{10}\approx3.2$. The simulation confirms this.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-6
+`1:length(x)` is `1:0 = c(1, 0)`, so the loop prints 1 and 0 even though `x` is empty; use `seq_along(x)`. `sample(5, 1)` and `sample(c(5), 1)` are the same call and both sample from `1:5`, because a single positive number is interpreted as a range. To sample from a vector `v` that might have length one, use `v[sample.int(length(v), 1)]`. `0.1 * 3 == 0.3` is `FALSE` because $0.1$ has no exact binary representation; use `isTRUE(all.equal(0.1 * 3, 0.3))`.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-7
+Every call resets the generator to the same state, so all 1000 "replications" are the same data set and the study has effectively one replication. Its Monte Carlo variability is zero and its conclusions are worthless. Fix: call `set.seed(2024)` once before the loop, or pass replication-specific seeds (for example `seed = 2024 + r`) and use `with_seed()`. For parallel replications, use L'Ecuyer-CMRG streams (@sec-engineering).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-8
+```{r}
+#| eval: false
+make_binomial_posterior <- function(y, n, log_prior, r_prior) {
+  log_lik <- function(t) dbinom(y, n, t, log = TRUE)
+  last_rate <- NA_real_
+  list(log_density = function(t) log_lik(t) + log_prior(t),
+       draw = function(k) {
+         out <- rejection_sample(k, function(t) log_lik(t) + log_prior(t), r_prior, log_prior, log_lik(y / n))
+         last_rate <<- out$acceptance_rate          # closure state updated with <<-
+         out$draws
+       },
+       acceptance_rate = function() last_rate)
+}
+post <- make_binomial_posterior(7, 20, log_prior, function(k) plogis(rnorm(k, 0, 1.5)))
+mean(post$draw(2e4)); post$acceptance_rate()
+```
+The `<<-` operator modifies `last_rate` in the enclosing environment: closures can carry state as well as parameters.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-9
+The sample mean of 1000 independent $\mathrm N(0,1)$-like draws has standard error $1/\sqrt{1000}\approx0.032$, so a tolerance of $0.01$ is about $0.32$ standard errors. A *correct* sampler fails with probability $\mathbb P(\lvert Z\rvert>0.32)\approx0.75$. (Note also that `testthat`'s `tolerance` is *relative* when the expected value is non-zero, and here it compares with 0, which makes the test even harder to reason about.) A better test is `expect_within_mcse(mean(draws), 0, mcse_mean(draws))`, which also accounts for autocorrelation if the draws come from MCMC.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-r-10
+For log-concave $\tilde\pi$, tangent lines to $\log\tilde\pi$ at abscissae $x_1<\dots<x_k$ lie above $\log\tilde\pi$, so their piecewise-linear upper hull exponentiates to a piecewise-exponential envelope that can be sampled by inverse transform. Each rejected point is added to the abscissae, so the envelope tightens and the acceptance rate rises towards one. For Gamma(5,1), starting from $x\in\{1,4,10\}$, the acceptance rate typically exceeds 0.95 after a few dozen rejections, whereas a fixed single-exponential envelope tuned to the same target accepts far less often. Compare both against `pgamma()` with a KS test.
+:::

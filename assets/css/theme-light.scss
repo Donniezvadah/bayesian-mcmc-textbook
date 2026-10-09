@@ -1,0 +1,41 @@
+/*-- scss:defaults --*/
+
+// Typography: a serif reading face for long mathematical prose, a humanist
+// sans for headings and navigation, and a monospace with clear glyphs for code.
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Source+Sans+3:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+$font-family-serif: "Source Serif 4", "Source Serif Pro", Georgia, Cambria, "Times New Roman", serif;
+$font-family-sans-serif: "Source Sans 3", "Source Sans Pro", -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+$font-family-monospace: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+
+$font-family-base: $font-family-serif;
+$headings-font-family: $font-family-sans-serif;
+$font-size-root: 17px;
+$line-height-base: 1.62;
+$headings-font-weight: 600;
+
+// Restrained academic palette: near-black ink, a single deep-blue accent.
+$body-bg: #ffffff;
+$body-color: #1d1d1f;
+$primary: #1f4e79;
+$secondary: #5a5a5f;
+$link-color: #1f5f99;
+$link-hover-color: #123d63;
+$border-color: #dcdcdf;
+
+$code-color: #8a2b52;
+$code-bg: #f6f7f9;
+$code-block-bg: #f6f7f9;
+$code-block-border-left: #c9d3df;
+
+$navbar-bg: #ffffff;
+$sidebar-bg: #fafafb;
+$footer-bg: #fafafb;
+
+$callout-color-note: #2f6fae;
+$callout-color-tip: #2e7d4f;
+$callout-color-important: #8a5a00;
+$callout-color-warning: #a8550f;
+$callout-color-caution: #a12a2a;
+
+$table-border-color: #dcdcdf;

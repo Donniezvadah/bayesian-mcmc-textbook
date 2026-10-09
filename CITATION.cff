@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this book or its code, please cite it as below."
+type: software
+title: "Bayesian Statistics and Markov Chain Monte Carlo: From Foundations to Advanced Computational Inference"
+abstract: "An open textbook and computational course on Bayesian inference and Markov chain Monte Carlo, from probability foundations to research-level topics, with validated R implementations, exercises, projects and a capstone assessment."
+authors:
+  - name: "Donnie"
+version: "0.1.0"
+date-released: "2026-10-09"
+license: ["CC-BY-4.0", "MIT"]
+keywords:
+  - Bayesian statistics
+  - Markov chain Monte Carlo
+  - Hamiltonian Monte Carlo
+  - computational statistics
+  - R

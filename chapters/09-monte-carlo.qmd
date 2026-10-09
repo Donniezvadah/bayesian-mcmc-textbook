@@ -1,0 +1,373 @@
+# Monte Carlo Integration {#sec-monte-carlo}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. write any posterior summary as an expectation and estimate it by averaging over independent draws;
+2. prove that the Monte Carlo estimator is unbiased and consistent, and use the central limit theorem to derive its standard error and confidence intervals;
+3. distinguish Monte Carlo (computational) error from posterior (statistical) uncertainty, and decide how many draws are needed;
+4. estimate probabilities, quantiles and smooth functions of means with valid standard errors, including by the delta method;
+5. reduce variance with antithetic and control variates, and prove when they help;
+6. explain why the cost of Monte Carlo does not depend on dimension, and where its difficulty actually lies.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-probability (expectation, variance, laws of total expectation and variance), @sec-math-quadrature (quadrature and the curse of dimensionality), @sec-r-rejection (exact sampling).
+:::
+
+## Motivation {#sec-mc-motivation}
+
+Every quantity reported from a posterior is an integral. Posterior means, variances, probabilities of hypotheses, quantiles, predictive distributions and expected losses all have the form
+$$
+\mu=\mathbb E_\pi[f(\theta)]=\int f(\theta)\,\pi(\theta)\,d\theta
+$$ {#eq-mc-target}
+for some function $f$. @sec-math-quadrature showed that grid-based integration fails beyond a few dimensions. Monte Carlo replaces the integral by an average over random draws, $\hat\mu_N=\frac1N\sum_tf(\theta_t)$. Its error is random, it decreases like $N^{-1/2}$ whatever the dimension, and it can be *estimated from the same draws*. This chapter develops the theory for independent draws. Chapters 10–11 extend it to the dependent draws produced by Markov chains, where the same questions return in harder form.
+
+## Definitions and notation {#sec-mc-definitions}
+
+::: {#def-mc-estimator}
+## Monte Carlo estimator
+Let $\theta_1,\dots,\theta_N\stackrel{\text{iid}}\sim\pi$ and let $f$ satisfy $\mathbb E_\pi\lvert f\rvert<\infty$. The **Monte Carlo estimator** of $\mu=\mathbb E_\pi[f]$ is
+$$
+\hat\mu_N=\frac1N\sum_{t=1}^Nf(\theta_t).
+$$
+Its **Monte Carlo standard error (MCSE)** is the standard deviation of its sampling distribution over repeated simulations, $\sqrt{\operatorname{Var}(\hat\mu_N)}$, and is estimated by $\hat\sigma_f/\sqrt N$, where $\hat\sigma_f^2$ is the sample variance of $f(\theta_1),\dots,f(\theta_N)$.
+:::
+
+Write $\sigma_f^2=\operatorname{Var}_\pi(f(\theta))$, which is $\gamma_0$ in the notation of the [notation page](../front/notation.qmd). Indicators turn probabilities into expectations, $\mathbb P_\pi(A)=\mathbb E_\pi[\mathbf 1\{\theta\in A\}]$, so every posterior probability is a special case.
+
+## Mathematical development {#sec-mc-development}
+
+### Unbiasedness, consistency and the central limit theorem {#sec-mc-theory}
+
+::: {#prp-mc-unbiased}
+## Unbiasedness and variance
+If $\mathbb E_\pi\lvert f\rvert<\infty$ then $\mathbb E[\hat\mu_N]=\mu$. If moreover $\sigma_f^2<\infty$, then $\operatorname{Var}(\hat\mu_N)=\sigma_f^2/N$.
+:::
+
+::: {.proof}
+Linearity of expectation gives $\mathbb E[\hat\mu_N]=\frac1N\sum_t\mathbb E[f(\theta_t)]=\mu$. Independence makes all covariances vanish, so $\operatorname{Var}(\hat\mu_N)=\frac1{N^2}\sum_t\operatorname{Var}(f(\theta_t))=\sigma_f^2/N$.
+:::
+
+::: {#thm-slln}
+## Strong law of large numbers
+If $\mathbb E_\pi\lvert f\rvert<\infty$, then $\hat\mu_N\to\mu$ almost surely as $N\to\infty$ [@durrett2019probability, Theorem 2.4.1].
+:::
+
+::: {#thm-clt}
+## Central limit theorem
+If $0<\sigma_f^2<\infty$, then $\sqrt N(\hat\mu_N-\mu)\xrightarrow{d}\mathrm N(0,\sigma_f^2)$. Moreover, since the sample standard deviation $\hat\sigma_f\to\sigma_f$ almost surely, $\sqrt N(\hat\mu_N-\mu)/\hat\sigma_f\xrightarrow{d}\mathrm N(0,1)$ by Slutsky's theorem [@durrett2019probability, Theorem 3.4.1].
+:::
+
+The interval $\hat\mu_N\pm1.96\,\hat\sigma_f/\sqrt N$ therefore contains $\mu$ with probability tending to 0.95. Three remarks:
+
+1. **The results are asymptotic.** For heavy-tailed $f(\theta)$ the normal approximation can be poor even for large $N$, and if $\sigma_f^2=\infty$ the convergence rate is slower than $N^{-1/2}$ and $\hat\sigma_f$ is meaningless.
+2. **The rate does not depend on dimension.** The dimension of $\theta$ enters only through $\sigma_f^2$ and the cost of drawing $\theta_t$. Compare @eq-curse-dimensionality.
+3. **The rate is slow.** Each additional correct decimal digit costs a factor of 100 in $N$.
+
+### Computational error versus statistical uncertainty {#sec-mc-two-errors}
+
+A posterior summary computed by Monte Carlo is subject to two quite different kinds of uncertainty:
+
+- **Statistical (posterior) uncertainty**, measured for instance by the posterior standard deviation $\sigma_f$: uncertainty about $\theta$ given the data. More draws do not reduce it. Only more data, or different data, do.
+- **Computational (Monte Carlo) error**, measured by the MCSE $\sigma_f/\sqrt N$: the error in our *calculation* of a fixed posterior quantity. It goes to zero as $N\to\infty$.
+
+The MCSE should be small relative to the precision with which the result is reported, and in particular small relative to the posterior standard deviation. With $N=4000$ independent draws, the MCSE of a posterior mean is $\sigma_f/63$, about 1.6% of the posterior standard deviation, which is ample for most purposes. Reporting a posterior mean to four significant digits when the MCSE affects the second digit is a common error. Conversely, a tiny MCSE says nothing about whether the *posterior* is precise, or whether the model is right.
+
+**How many draws?** To estimate $\mu$ with MCSE at most $\epsilon$ requires $N\ge\sigma_f^2/\epsilon^2$. For a probability $p$, $\sigma_f^2=p(1-p)$, so the *relative* error is $\sqrt{(1-p)/(Np)}$, and estimating a tail probability of $10^{-3}$ to 10% relative accuracy needs about $10^5$ draws. Rare events are expensive for plain Monte Carlo, and this is the motivation for importance sampling (@sec-importance).
+
+### Functions of means and quantiles {#sec-mc-delta}
+
+Many summaries are not simple means: ratios of posterior expectations, variances, correlations and quantiles. Their standard errors follow from first-order expansions.
+
+::: {#prp-delta}
+## Delta method
+Let $\bar Z_N$ be the average of $N$ independent copies of a random vector $Z\in\mathbb R^k$ with mean $m$ and covariance $\Sigma$, and let $g:\mathbb R^k\to\mathbb R$ be differentiable at $m$ with $\nabla g(m)\neq0$. Then
+$\sqrt N\{g(\bar Z_N)-g(m)\}\xrightarrow{d}\mathrm N\big(0,\nabla g(m)^\top\Sigma\nabla g(m)\big)$.
+:::
+
+::: {.proof}
+By the multivariate CLT, $\sqrt N(\bar Z_N-m)\xrightarrow{d}\mathrm N(0,\Sigma)$. A first-order Taylor expansion gives $g(\bar Z_N)-g(m)=\nabla g(m)^\top(\bar Z_N-m)+o_p(N^{-1/2})$, and the continuous mapping theorem with Slutsky's theorem gives the limit [@vandervaart1998asymptotic, Theorem 3.1].
+:::
+
+For example, a posterior variance estimated by $\overline{f^2}-\bar f^2$ uses $g(a,b)=b-a^2$ with $Z=(f,f^2)$. The self-normalised importance sampling estimator of @sec-importance is a ratio of means, and its standard error comes from @prp-delta.
+
+**Quantiles.** If $\pi$ has a density $p$ that is positive and continuous at the $q$-quantile $\xi_q$, the empirical quantile satisfies $\sqrt N(\hat\xi_q-\xi_q)\xrightarrow{d}\mathrm N\big(0,\ q(1-q)/p(\xi_q)^2\big)$ [@vandervaart1998asymptotic, Corollary 21.5]. Tail quantiles, where $p(\xi_q)$ is small, are estimated much less precisely than central ones, which is why tail-ESS (@sec-diagnostics) and quantile MCSEs (`mcse_quantile()`) receive special attention.
+
+### Variance reduction {#sec-mc-variance-reduction}
+
+The error $\sigma_f/\sqrt N$ can be reduced by increasing $N$ or by replacing $f$ with an estimator that has the same expectation and smaller variance. Two classical techniques follow.
+
+**Antithetic variates** [@hammersley1956new]. If $\theta=F^{-1}(U)$ for $U\sim\mathrm U(0,1)$, then $\theta'=F^{-1}(1-U)$ has the same distribution. Averaging $f(\theta)$ and $f(\theta')$ over $N/2$ pairs gives an unbiased estimator with variance
+$$
+\operatorname{Var}\Big(\frac{f(\theta)+f(\theta')}{2}\Big)\Big/\frac N2=\frac{\sigma_f^2}{N}\big(1+\operatorname{Cor}(f(\theta),f(\theta'))\big),
+$$
+an improvement whenever the correlation is negative.
+
+::: {#prp-antithetic}
+## Antithetic variates help for monotone functions
+If $h:(0,1)\to\mathbb R$ is monotone and $\operatorname{Var}h(U)<\infty$, then $\operatorname{Cov}(h(U),h(1-U))\le0$.
+:::
+
+::: {.proof}
+Let $U,V$ be independent $\mathrm U(0,1)$ variables. Suppose $h$ is non-decreasing; then $k(u)=h(1-u)$ is non-increasing. For all $u,v$, $(h(u)-h(v))(k(u)-k(v))\le0$, because the two factors have opposite signs. Taking expectations, $\mathbb E[(h(U)-h(V))(k(U)-k(V))]=2\operatorname{Cov}(h(U),k(U))\le0$, using independence and identical distribution of $U$ and $V$ to simplify the cross terms. The non-increasing case is identical.
+:::
+
+**Control variates.** Suppose $h(\theta)$ has a *known* mean $\mu_h$ and is correlated with $f(\theta)$. For any $\beta$, $\hat\mu_N^{(\beta)}=\frac1N\sum_t\{f(\theta_t)-\beta(h(\theta_t)-\mu_h)\}$ is unbiased.
+
+::: {#prp-control-variates}
+## Optimal control variate
+$\operatorname{Var}(\hat\mu_N^{(\beta)})$ is minimised by $\beta^\ast=\operatorname{Cov}(f,h)/\operatorname{Var}(h)$, where it equals $(1-\rho^2)\sigma_f^2/N$ with $\rho=\operatorname{Cor}(f,h)$.
+:::
+
+::: {.proof}
+$N\operatorname{Var}(\hat\mu_N^{(\beta)})=\operatorname{Var}(f)-2\beta\operatorname{Cov}(f,h)+\beta^2\operatorname{Var}(h)$, a quadratic in $\beta$ minimised at $\beta^\ast$. Substituting gives $\operatorname{Var}(f)-\operatorname{Cov}(f,h)^2/\operatorname{Var}(h)=(1-\rho^2)\operatorname{Var}(f)$.
+:::
+
+In practice $\beta^\ast$ is estimated by regressing $f(\theta_t)$ on $h(\theta_t)$, which introduces an $O(1/N)$ bias that is negligible next to the $O(N^{-1/2})$ error. A correlation of $\rho=0.95$ reduces the variance tenfold, equivalent to ten times as many draws. In Bayesian computation, natural control variates include posterior moments known in closed form (for conjugate sub-models) and the score function, which has mean zero under the posterior under mild conditions.
+
+Other variance reduction techniques include stratification, Rao–Blackwellisation (replacing $f(\theta_t)$ by a conditional expectation computed analytically, @sec-gibbs) and importance sampling (@sec-importance) [@robert2004monte, Chapter 4; @owen2013monte].
+
+### Computational complexity {#sec-mc-complexity}
+
+The total cost of Monte Carlo estimation to MCSE $\epsilon$ is
+$$
+\text{cost}\approx\frac{\sigma_f^2}{\epsilon^2}\times c,
+$$ {#eq-mc-cost}
+where $c$ is the cost of one draw plus one evaluation of $f$. A method that halves the variance is worth exactly as much as one that halves the cost per draw. This is the basis for fair comparisons of samplers in @sec-mixing, which measure *effective draws per unit of computation*. For independent draws, the **effective sample size** of $N$ draws is $N$ itself. @sec-markov-chains shows that dependent draws are worth fewer, and @sec-importance that weighted draws are worth fewer.
+
+The dimension $d$ affects @eq-mc-cost through $c$ (evaluating a $d$-dimensional density costs at least $O(d)$) and possibly through $\sigma_f^2$, but not through the rate. The real difficulty in high dimensions is not averaging but **drawing independent samples** from $\pi$ in the first place: rejection sampling's acceptance rate typically collapses exponentially with $d$ (@sec-r-interpretation). Markov chain Monte Carlo resolves this by giving up independence.
+
+## Worked example: summaries of a risk ratio {#sec-mc-worked}
+
+In the A/B test of @sec-dec-worked the posteriors were $\theta_A\sim\mathrm{Beta}(39,363)$ and $\theta_B\sim\mathrm{Beta}(53,359)$, independently. Consider the **risk ratio** $\psi=\theta_B/\theta_A$. Several of its summaries have closed forms we can check against:
+$$
+\mathbb E[\psi\mid y]=\mathbb E[\theta_B]\,\mathbb E[\theta_A^{-1}]=\frac{a_B}{a_B+b_B}\cdot\frac{a_A+b_A-1}{a_A-1},
+$$
+using $\mathbb E[\theta^{-1}]=\frac{B(a-1,b)}{B(a,b)}=\frac{a+b-1}{a-1}$ for $\theta\sim\mathrm{Beta}(a,b)$ with $a>1$.
+
+```{r}
+#| label: mc-risk-ratio
+aA <- 39; bA <- 363; aB <- 53; bB <- 359
+exact_mean <- aB / (aB + bB) * (aA + bA - 1) / (aA - 1)
+set.seed(901)
+N <- 10000
+thA <- rbeta(N, aA, bA); thB <- rbeta(N, aB, bB); psi <- thB / thA
+est <- mc_estimate(psi)
+rbind(round(est, 5), c(exact_mean, rep(NA, 4)))
+c(posterior_sd = sd(psi), mcse = est[["mcse"]], ratio = est[["mcse"]] / sd(psi))
+```
+
+The estimate agrees with the exact mean within its MCSE. The MCSE is 1% of the posterior standard deviation, so the posterior mean is computed to far greater precision than it is *known*: the posterior standard deviation of about 0.28 is the statistical uncertainty, and the MCSE of about 0.003 is the computational error.
+
+**Other summaries and their errors.**
+
+```{r}
+#| label: mc-risk-ratio-summaries
+p_gt1 <- mean(psi > 1)
+q <- quantile(psi, c(0.025, 0.5, 0.975), names = FALSE)
+dens_at_q <- approxfun(density(psi))(q)
+c(P_psi_gt_1 = p_gt1, mcse_P = sqrt(p_gt1 * (1 - p_gt1) / N))
+rbind(quantile = q, mcse_asymptotic = sqrt(c(0.025, 0.5, 0.975) * (1 - c(0.025, 0.5, 0.975)) / N) / dens_at_q,
+      mcse_rank_based = sapply(c(0.025, 0.5, 0.975), function(p) mcse_quantile(psi, p)))
+```
+
+The 97.5% quantile, in the long right tail, has about three times the MCSE of the median, and the 2.5% quantile somewhat more than the median: there are fewer draws in the tails. The asymptotic formula (with a kernel density estimate of $p(\xi_q)$) and the rank-based estimator `mcse_quantile()`, which avoids density estimation (@sec-mixing), agree.
+
+**A control variate.** $\theta_A^{-1}$ has the known mean $(a_A+b_A-1)/(a_A-1)$ and is strongly correlated with $\psi$ (correlation about 0.77):
+
+```{r}
+#| label: mc-control-variate
+cv <- control_variate_estimate(psi, 1 / thA, (aA + bA - 1) / (aA - 1))
+round(cv, 5)
+c(equivalent_draws_multiplier = 1 / cv[["variance_ratio"]])
+```
+
+The control variate removes about 60% of the variance, which is worth about 2.5 times as many draws at negligible extra cost.
+
+## R implementation {#sec-mc-r}
+
+The helpers used above are in `R/utilities/monte-carlo.R`:
+
+```{r}
+#| file: R/utilities/monte-carlo.R
+```
+
+Note the comment on `mc_estimate()`. Its standard error $s/\sqrt N$ is valid only for independent draws. Applied to MCMC output, it would usually understate the error, sometimes by an order of magnitude. @sec-markov-chains explains why, and @sec-mixing gives the correct estimators.
+
+## Computational experiment {#sec-mc-experiment}
+
+**The $N^{-1/2}$ rate, and the honesty of the standard error.** For the risk ratio, we repeat the estimation 500 times at each of several $N$, recording the actual error, the estimated MCSE and whether the 95% interval covers the exact mean.
+
+```{r}
+#| label: fig-mc-rate
+#| fig-cap: "Root-mean-square error of the Monte Carlo estimate of the posterior mean risk ratio over 500 replications (points), against the average estimated MCSE (line) and the slope $-1/2$ reference (dashed). The estimated standard error tracks the actual error at every $N$."
+#| fig-height: 3.6
+set.seed(902)
+Ns <- c(100, 300, 1000, 3000, 10000)
+res <- t(sapply(Ns, function(n) {
+  r <- replicate(500, { a <- rbeta(n, aA, bA); b <- rbeta(n, aB, bB); mc_estimate(b / a) })
+  c(N = n, rmse = sqrt(mean((r["estimate", ] - exact_mean)^2)), mean_mcse = mean(r["mcse", ]),
+    coverage = mean(r["lower", ] <= exact_mean & exact_mean <= r["upper", ]))
+}))
+plot(res[, "N"], res[, "rmse"], log = "xy", pch = 16, col = course_cols[["blue"]],
+     xlab = "number of draws N", ylab = "error")
+lines(res[, "N"], res[, "mean_mcse"], col = course_cols[["orange"]], lwd = 2)
+lines(Ns, res[1, "rmse"] * sqrt(Ns[1] / Ns), lty = 2, col = course_muted)
+legend("topright", c("actual RMSE", "mean estimated MCSE", "slope -1/2"), pch = c(16, NA, NA),
+       lty = c(NA, 1, 2), col = c(course_cols[["blue"]], course_cols[["orange"]], course_muted), bty = "n", cex = 0.85)
+round(res, 4)
+```
+
+Coverage is close to 0.95 at every $N$, including $N=100$, because the ratio has moderately light tails here.
+
+**When the CLT fails.** If $\theta_A$ had a posterior with substantial mass near zero, $\psi$ would be heavy-tailed. For instance, with $\theta_A\sim\mathrm{Beta}(1.5,30)$, $\mathbb E[\psi]$ exists ($a>1$) but $\operatorname{Var}(\psi)=\infty$ ($\mathbb E[\theta_A^{-2}]$ requires $a>2$):
+
+```{r}
+#| label: mc-heavy-tail
+set.seed(903)
+heavy <- t(replicate(500, { a <- rbeta(1000, 1.5, 30); b <- rbeta(1000, aB, bB); mc_estimate(b / a) }))
+truth <- aB / (aB + bB) * (1.5 + 30 - 1) / (1.5 - 1)
+c(coverage = mean(heavy[, "lower"] <= truth & truth <= heavy[, "upper"]),
+  median_estimate = median(heavy[, "estimate"]), truth = truth)
+```
+
+The nominal 95% intervals cover the truth far less often, and the typical (median) estimate falls below the truth. With infinite variance, the sample standard deviation underestimates the spread of the estimator, and most replications never see the rare huge values that make up the mean. No diagnostic computed from the draws reliably reveals this. It must be checked analytically, by verifying which moments exist.
+
+**Antithetic variates.** For $\mathbb E[e^U]=e-1$, the exact variance of the antithetic pair mean is about $0.0039$, compared with $0.121$ for the mean of two independent evaluations, a 31-fold reduction:
+
+```{r}
+#| label: mc-antithetic
+set.seed(904)
+a <- antithetic_estimate(exp, 5000)
+plain <- mc_estimate(exp(runif(10000)))
+rbind(antithetic = a[c("estimate", "mcse")], plain = plain[c("estimate", "mcse")], exact = c(exp(1) - 1, NA))
+```
+
+## Diagnostics and validation {#sec-mc-validation}
+
+- **Report the MCSE** of every Monte Carlo estimate, and choose the number of reported digits accordingly.
+- **Check moment conditions analytically.** The CLT-based MCSE requires $\sigma_f^2<\infty$. For ratios and inverse moments, this is a property of the posterior that must be verified (the heavy-tail experiment).
+- **Check the estimator on cases with known answers**, as in the worked example and the tests in `tests/testthat/test-monte-carlo.R`.
+- **Replicate**: run the whole computation with several seeds. Estimates should differ by about their MCSE; larger differences indicate a problem (heavy tails, a bug, or dependence among draws that was not accounted for).
+
+## Interpretation {#sec-mc-interpretation}
+
+Monte Carlo turns integration into estimation, and brings the full machinery of statistical inference to bear on our own computations: point estimates, standard errors, confidence intervals and checks of assumptions. Its weakness is not the averaging, which works in any dimension, but obtaining the draws. In the remaining chapters of this part, draws come from Markov chains, and the price is dependence.
+
+## Limitations and common errors {#sec-mc-errors}
+
+- **Applying $s/\sqrt N$ to dependent draws** (MCMC output). The resulting MCSE is usually far too small (@sec-markov-chains).
+- **Ignoring infinite variance.** Estimators of inverse moments, ratios and importance-weighted quantities may have infinite variance, and the reported MCSE is then meaningless.
+- **Confusing MCSE with posterior uncertainty**, in either direction.
+- **Reporting too many digits** relative to the MCSE.
+- **Estimating tiny probabilities** by plain Monte Carlo with too few draws: an estimate of 0 from $10^4$ draws is consistent with a probability of $3\times10^{-4}$.
+
+## Chapter summary {#sec-mc-summary}
+
+- Posterior summaries are expectations $\mathbb E_\pi[f]$, estimated by averages $\hat\mu_N$ over draws from $\pi$.
+- With independent draws, $\hat\mu_N$ is unbiased (@prp-mc-unbiased) and consistent (@thm-slln). If $\sigma_f^2<\infty$ it is asymptotically normal (@thm-clt) with MCSE $\sigma_f/\sqrt N$, independent of dimension.
+- MCSE (computational error) is different from posterior standard deviation (statistical uncertainty). The former should be small relative to the latter.
+- Functions of means and quantiles have standard errors from the delta method (@prp-delta) and quantile asymptotics. Tail summaries need more draws.
+- Antithetic variates (@prp-antithetic) and control variates (@prp-control-variates) reduce variance, and a variance reduction is equivalent to a proportional increase in $N$ (@eq-mc-cost).
+- The hard part of high-dimensional Monte Carlo is obtaining draws, not averaging them.
+
+## Exercises {#sec-mc-exercises}
+
+::: {#exr-mc-1}
+**[Mathematical ★]** How many independent posterior draws are needed to estimate $\mathbb P(\theta>0\mid y)\approx0.97$ with an MCSE of 0.002? To estimate $\mathbb P(\theta>3\mid y)\approx10^{-4}$ with a relative MCSE of 10%?
+:::
+
+::: {#exr-mc-2}
+**[Mathematical ★★]** Use the delta method to derive the MCSE of the Monte Carlo estimate of a posterior standard deviation $\sqrt{\overline{f^2}-\bar f^2}$, and verify it by simulation for $f(\theta)=\theta$, $\theta\sim\mathrm N(0,1)$.
+:::
+
+::: {#exr-mc-3}
+**[Proof ★★]** Show that for $\theta\sim\mathrm{Beta}(a,b)$, $\mathbb E[\theta^{-k}]<\infty$ if and only if $a>k$. Hence determine when the Monte Carlo estimator of $\mathbb E[\theta_B/\theta_A]$ has finite variance.
+:::
+
+::: {#exr-mc-4}
+**[Proof ★★]** Show that antithetic variates can *increase* variance for a non-monotone function, by computing $\operatorname{Cor}(h(U),h(1-U))$ for $h(u)=(u-\frac12)^2$.
+:::
+
+::: {#exr-mc-5}
+**[R ★★]** Estimate $\mathbb E[\max(\theta_1,\theta_2,\theta_3)]$ for independent $\theta_k\sim\mathrm N(\mu_k,1)$ with $\mu=(0,0.5,1)$, using $\theta_3$ as a control variate. Report the variance reduction, and compare with an estimate based on $10^7$ draws.
+:::
+
+::: {#exr-mc-6}
+**[Simulation ★★]** The empirical coverage of Monte Carlo confidence intervals in the risk-ratio experiment was close to 95%. Find a posterior summary in the A/B example for which coverage at $N=100$ is clearly below 95%, and explain why.
+:::
+
+::: {#exr-mc-7}
+**[Conceptual ★★]** A colleague reports a posterior mean of $2.3471$ with posterior standard deviation $0.8$, computed from 1000 independent draws. Which digits are meaningful? How many draws would justify reporting $2.347$?
+:::
+
+::: {#exr-mc-8}
+**[Research ★★★]** Stratified sampling partitions the space into strata $A_1,\dots,A_K$ with known probabilities $\pi(A_k)$ and samples $N_k$ draws within each. Derive the variance of the stratified estimator, show that proportional allocation ($N_k\propto\pi(A_k)$) never does worse than plain Monte Carlo, and find the optimal (Neyman) allocation. Implement it for $\mathbb E[e^U]$ with $K$ equal strata and compare with antithetic variates.
+:::
+
+## Further reading {#sec-mc-reading}
+
+- @robert2004monte, Chapters 3–4: Monte Carlo integration, convergence and variance reduction.
+- @owen2013monte: an extensive, modern treatment of Monte Carlo methods, including variance reduction and quasi-Monte Carlo.
+- @liu2004monte, Chapter 2: basic Monte Carlo and its role in scientific computing.
+- @hammersley1956new: the original antithetic variates paper.
+- @koehler2009assessment: reporting Monte Carlo error in simulation-based analyses.
+
+## Solutions {#sec-mc-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mc-1
+$\sqrt{0.97\times0.03/N}\le0.002$ gives $N\ge7275$. For the rare event, the relative MCSE is $\sqrt{(1-p)/(Np)}\le0.1$, so $N\ge(1-p)/(0.01p)\approx10^6$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mc-2
+With $Z=(f,f^2)$, mean $m=(\mu_1,\mu_2)$ and $g(a,b)=\sqrt{b-a^2}$, we have $\nabla g=\frac{1}{2s}(-2\mu_1,1)$ with $s=\sqrt{\mu_2-\mu_1^2}$. For $\theta\sim\mathrm N(0,1)$: $\mu_1=0$, so $\nabla g=(0,\frac12)$ and the asymptotic variance is $\frac14\operatorname{Var}(\theta^2)=\frac14\cdot2=\frac12$. The MCSE is $\sqrt{1/(2N)}$, e.g. 0.0071 for $N=10^4$. A simulation of 1000 replications of `sd(rnorm(1e4))` gives a standard deviation close to 0.0071.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mc-3
+$\mathbb E[\theta^{-k}]=\int_0^1\theta^{a-k-1}(1-\theta)^{b-1}d\theta/B(a,b)$, finite iff $a-k>0$ (integrability at 0; the behaviour at 1 is controlled by $b>0$). The estimator of $\mathbb E[\theta_B/\theta_A]$ has finite variance iff $\mathbb E[\theta_B^2]\mathbb E[\theta_A^{-2}]<\infty$, i.e. $a_A>2$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mc-4
+$h(1-u)=(\frac12-u)^2=h(u)$, so $h(U)$ and $h(1-U)$ are identical and their correlation is $+1$. The antithetic pair then gives no more information than a single evaluation but costs two, which doubles the variance per evaluation.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mc-5
+```{r}
+#| eval: false
+set.seed(5)
+th <- matrix(rnorm(3e4, c(0, 0.5, 1)), ncol = 3, byrow = TRUE)
+f <- apply(th, 1, max)
+control_variate_estimate(f, th[, 3], 1)
+```
+$\max$ and $\theta_3$ are correlated ($\rho\approx0.70$), so the variance ratio is about 0.51, roughly a twofold gain.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mc-6
+Tail probabilities and extreme quantiles are natural candidates. For example, $\mathbb P(\psi>2\mid y)$ is small (around 0.01), so with $N=100$ the estimate is often exactly 0, with an estimated MCSE of 0, and the "interval" $[0,0]$ misses the truth. The normal approximation to a binomial proportion fails when $Np$ is small. Use more draws, or an interval designed for proportions (e.g., Wilson or Jeffreys).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mc-7
+The MCSE is $0.8/\sqrt{1000}\approx0.025$, so only "2.3" (and perhaps "2.35") is supported. For an MCSE of about $0.0005$ (so that the third decimal is meaningful), $N\approx(0.8/0.0005)^2\approx2.6\times10^6$. But the posterior standard deviation is $0.8$, so reporting $2.347$ conveys false precision about $\theta$ in any case: report $2.3$ (sd $0.8$).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-mc-8
+The stratified estimator $\sum_k\pi(A_k)\bar f_k$ has variance $\sum_k\pi(A_k)^2\sigma_k^2/N_k$, where $\sigma_k^2$ is the within-stratum variance. With $N_k=N\pi(A_k)$ this is $\frac1N\sum_k\pi(A_k)\sigma_k^2$, which by the law of total variance equals $\frac1N\big(\sigma_f^2-\operatorname{Var}(\mathbb E[f\mid\text{stratum}])\big)\le\sigma_f^2/N$. Minimising $\sum_k\pi_k^2\sigma_k^2/N_k$ subject to $\sum N_k=N$ (Lagrange multipliers) gives $N_k\propto\pi(A_k)\sigma_k$. For $e^U$ with $K=10$ equal strata, the within-stratum variances are tiny and the variance reduction is far larger than for antithetic variates.
+:::

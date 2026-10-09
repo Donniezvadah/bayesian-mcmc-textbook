@@ -1,0 +1,147 @@
+# Project 2: Estimating an Unknown Mean {#sec-project-2 .unnumbered}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Project at a glance
+
+**Prerequisites:** @sec-conjugate, @sec-priors, @sec-prediction, @sec-gibbs, @sec-mh.
+**Effort:** about 10–15 hours.
+**Deliverable:** a reproducible report (at most 10 pages plus code).
+**Skills:** the normal model with unknown mean and variance; conjugate and simulation-based inference; uncertainty as a function of sample size; prior sensitivity; the difference between statistical and systematic error.
+:::
+
+## Scientific question {#sec-p2-question}
+
+In 1879 A. A. Michelson measured the speed of light in air at the U.S. Naval Academy in 100 runs, grouped into five experiments of 20 runs [@michelson1882experimental; @stigler1977robust]. What do these measurements say about the speed of light? And how does the answer compare with the modern defined value of exactly 299 792.458 km/s, which is 792.458 in the coded units used below?
+
+## Data {#sec-p2-data}
+
+`datasets::morley` (identical to `MASS::michelson`) has 100 rows and three variables. `Expt` is the experiment (1–5), `Run` is the run within an experiment (1–20), and `Speed` is the measured speed in km/s minus 299 000. The R documentation cites Table 24 of @michelson1882experimental and Table 6 of @stigler1977robust. There are no missing values. We use the data as distributed with R, which is licensed under the GPL ("Part of R"). The measurements themselves are historical facts. The measurements concern light travelling in air, which is slower than light in vacuum (the refractive index of air exceeds 1), and Michelson's published values involve further instrumental corrections. For this project we analyse the coded values as given. We treat the modern vacuum value as an approximate reference, keeping in mind that the appropriate in-air reference is somewhat *lower*. @stigler1977robust discusses the choice of a true value for these data.
+
+## Tasks {#sec-p2-tasks}
+
+**Task 1 (derivation).** For $y_i\mid\mu,\sigma^2\sim\mathrm N(\mu,\sigma^2)$ with the normal–inverse-gamma prior $\mu\mid\sigma^2\sim\mathrm N(m_0,\sigma^2/k_0)$, $\sigma^2\sim\mathrm{IG}(a_0,b_0)$, derive the joint posterior, the marginal posterior of $\mu$ (a scaled $t$), and the posterior predictive distribution of a new measurement.
+
+**Task 2 (conjugate vs numerical).** Compute the posterior of $\mu$ analytically. Then reproduce it with:
+- (a) direct Monte Carlo from the NIG posterior;
+- (b) a random-walk Metropolis sampler on $(\mu,\log\sigma)$, including the Jacobian;
+- (c) a Gibbs sampler under the *semi-conjugate* prior $\mu\sim\mathrm N(m_0,v_0)$, $\sigma^2\sim\mathrm{IG}(a_0,b_0)$, compared with a grid approximation for that prior.
+
+Report MCSEs and agreement within Monte Carlo error.
+
+**Task 3 (sample size).** Using random subsamples of size $n=5,10,20,50,100$, show how the width of the 95% interval for $\mu$ scales with $n$. Then repeat using the *first* $n$ runs in recorded order, and explain the difference.
+
+**Task 4 (prior sensitivity).** Compare at least three priors, one of them deliberately misinformed, at $n=10$ and $n=100$. When does the prior matter?
+
+**Task 5 (model checking).** The model treats all 100 runs as exchangeable. Use a posterior predictive check of the spread of the five experiment means to test that assumption. Fit a hierarchical model across experiments (@sec-hierarchical), and compare its interval for the overall mean with the independent-normal interval.
+
+**Task 6 (interpretation).** Does the posterior interval contain 792.458? Explain carefully what a Bayesian posterior interval does and does not account for, with reference to systematic (measurement) error and @stigler1977robust.
+
+## Starter code {#sec-p2-starter}
+
+```{r}
+#| label: p2-starter
+y <- morley$Speed
+c(n = length(y), mean = mean(y), sd = sd(y))
+tapply(y, morley$Expt, mean)
+```
+
+```{r}
+#| label: fig-p2-data
+#| fig-cap: "Michelson's 100 measurements (coded speed, km/s minus 299 000) by experiment. The dashed line is the modern value converted to the same units."
+stripchart(Speed ~ Expt, data = morley, vertical = TRUE, method = "jitter", pch = 16, col = alpha_col(course_cols[1], 0.6),
+           xlab = "experiment", ylab = "speed - 299000 (km/s)")
+abline(h = 792.458, lty = 2, col = course_ink)
+```
+
+## Assessment {#sec-p2-assessment}
+
+Assessed with the [capstone rubric](capstone.qmd#sec-capstone-rubric). Particular weight goes on the correctness of the derivation (Task 1), the validation of the samplers against the exact posterior (Task 2), and the quality of the interpretation (Tasks 5–6).
+
+## Solution guide {#sec-p2-solutions}
+
+::: {.callout-tip collapse="true"}
+## Task 1
+The joint posterior is NIG with $k_n=k_0+n$, $m_n=(k_0m_0+n\bar y)/k_n$, $a_n=a_0+n/2$ and $b_n=b_0+\frac12\sum(y_i-\bar y)^2+\frac{k_0n(\bar y-m_0)^2}{2k_n}$. The marginal is $\mu\mid y\sim t_{2a_n}(m_n,\,b_n/(a_nk_n))$, and the predictive is $\tilde y\mid y\sim t_{2a_n}(m_n,\,b_n(1+1/k_n)/a_n)$ (@sec-conjugate).
+:::
+
+::: {.callout-tip collapse="true"}
+## Task 2
+```{r}
+#| label: p2-compare
+m0 <- 800; k0 <- 0.01; a0 <- 0.01; b0 <- 0.01            # weak NIG prior
+post <- nig_update(y, m0, k0, a0, b0)
+exact_q <- qt_ls(c(0.025, 0.5, 0.975), 2 * post$a, post$m, sqrt(post$b / (post$a * post$k)))
+set.seed(201)
+mc <- rnig(20000, post)[, "mu"]
+log_post <- function(par) {                                # par = (mu, log sigma); Jacobian of sigma2 = exp(2 * ls)
+  mu <- par[1]; s2 <- exp(2 * par[2])
+  sum(dnorm(y, mu, sqrt(s2), log = TRUE)) + dnorm(mu, m0, sqrt(s2 / k0), log = TRUE) +
+    dinvgamma_log(s2, a0, b0) + log(2) + 2 * par[2]
+}
+rwm <- lapply(1:4, function(k) rw_metropolis(log_post, c(850, log(80)) + rnorm(2, 0, c(10, 0.1)), 6000,
+                                            proposal_cov = diag(c(8, 0.07)^2))$draws[-(1:1000), 1])
+rwm_mu <- do.call(cbind, rwm)
+rbind(exact = exact_q, direct_mc = quantile(mc, c(0.025, 0.5, 0.975)),
+      rwm = quantile(rwm_mu, c(0.025, 0.5, 0.975))) |> round(2)
+c(rhat = rhat_rank(rwm_mu), ess_bulk = ess_bulk(rwm_mu), mcse_median = mcse_quantile(rwm_mu, 0.5)) |> round(3)
+```
+```{r}
+#| label: p2-gibbs
+v0 <- 100^2
+g <- lapply(1:4, function(k) gibbs_normal(y, 3000, m0 = m0, v0 = v0, a0 = 1, b0 = 1)[-(1:500), "mu"])
+grid <- seq(800, 900, length.out = 2001)
+log_marg <- sapply(grid, function(mu) dnorm(mu, m0, sqrt(v0), log = TRUE) - (1 + length(y) / 2) * log(1 + 0.5 * sum((y - mu)^2)))
+w <- exp(log_marg - max(log_marg)); w <- w / sum(w)
+c(gibbs_mean = mean(unlist(g)), grid_mean = sum(grid * w), mcse = mcse_mean(do.call(cbind, g))) |> round(3)
+```
+All three simulation methods agree with the exact quantiles to within their MCSEs (about 0.1–0.3 here). Under the semi-conjugate prior, $\sigma^2$ integrates out analytically, $p(\mu\mid y)\propto\pi(\mu)\{b_0+\frac12\sum(y_i-\mu)^2\}^{-(a_0+n/2)}$, which gives the grid reference. Both the RWM and the Gibbs posteriors match their references.
+:::
+
+::: {.callout-tip collapse="true"}
+## Task 3
+```{r}
+#| label: p2-n
+set.seed(202)
+width <- function(yy) { p <- nig_update(yy, m0, k0, a0, b0); diff(qt_ls(c(0.025, 0.975), 2 * p$a, p$m, sqrt(p$b / (p$a * p$k)))) }
+ns <- c(5, 10, 20, 50, 100)
+rbind(random_subsample = sapply(ns, function(n) mean(replicate(200, width(sample(y, n))))),
+      first_n_runs = sapply(ns, function(n) width(y[1:n])),
+      centre_first_n = sapply(ns, function(n) mean(y[1:n]))) |> `colnames<-`(paste0("n=", ns)) |> round(1)
+```
+For random subsamples, the average width falls roughly like $1/\sqrt n$ once $n$ is moderate, with an extra penalty at very small $n$ from the heavy $t$ tails when $\sigma$ is unknown. The first $n$ runs all come from experiment 1, which has both the highest mean and the largest spread. Their intervals are wider and centred too high until other experiments enter. The data are *not* exchangeable in recorded order, which is the first warning sign for the model.
+:::
+
+::: {.callout-tip collapse="true"}
+## Task 4
+```{r}
+#| label: p2-priors
+pri <- list(weak = c(800, 0.01, 0.01, 0.01), informative_wide = c(850, 1, 2, 2 * 80^2), misinformed = c(700, 20, 2, 2 * 80^2))
+set.seed(203); y10 <- sample(y, 10)
+t(sapply(pri, function(p) {
+  f <- function(yy) { q <- nig_update(yy, p[1], p[2], p[3], p[4]); qt_ls(c(0.025, 0.5, 0.975), 2 * q$a, q$m, sqrt(q$b / (q$a * q$k))) }
+  c(f(y10), f(y))
+})) |> `colnames<-`(c("n10_lo", "n10_med", "n10_hi", "n100_lo", "n100_med", "n100_hi")) |> round(1)
+```
+The misinformed prior, centred at 700 with $k_0=20$, carries the weight of 20 pseudo-observations. It pulls the posterior far towards 700 with $n=10$, and still noticeably with $n=100$. The weak and wide priors give essentially the data-based interval. The prior matters when its effective sample size $k_0$ is comparable with $n$, and a prior predictive check would reveal that the misinformed prior conflicts with the data (@sec-priors).
+:::
+
+::: {.callout-tip collapse="true"}
+## Tasks 5–6
+```{r}
+#| label: p2-ppc
+set.seed(204)
+draws <- rnig(4000, post)
+sd_means <- function(yy) sd(tapply(yy, morley$Expt, mean))
+t_rep <- apply(draws, 1, function(d) sd_means(rnorm(100, d[["mu"]], sqrt(d[["sigma2"]]))))
+c(observed_sd_of_expt_means = sd_means(y), ppp = ppc_pvalue(sd_means(y), t_rep))
+se <- tapply(y, morley$Expt, sd) / sqrt(20)
+hier <- eight_schools_exact(20000, y = as.vector(tapply(y, morley$Expt, mean)), sigma = as.vector(se), s_mu = 1000, s_tau = 100, tau_max = 600)
+rbind(independent_normal = exact_q[c(1, 3)], hierarchical_mu = quantile(hier[, "mu"], c(0.025, 0.975))) |> round(1)
+```
+The five experiment means vary more than the exchangeable model predicts (a small posterior predictive p-value). The hierarchical model allows between-experiment variation and widens the interval for the overall mean considerably. Yet neither interval contains 792.458, and an in-air reference value would be lower still, so the conclusion does not depend on the choice of reference. That is not a failure of Bayesian inference. The posterior quantifies uncertainty *given the model*, and the model contains no term for systematic error shared by all runs, such as calibration errors in distance or rotation rate. @stigler1977robust used these data to show that even robust estimators are far from the true value, because the dominant error is bias, not noise. A model with a bias term would need external information (a prior on the bias), and the data alone cannot identify it.
+:::

@@ -1,0 +1,489 @@
+# Mathematical Tools for Bayesian Computation {#sec-math-tools}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. compute gradients and Hessians of log densities analytically, and check them by finite differences;
+2. use second-order Taylor expansions to build the Laplace approximation to a posterior and its normalising constant, and say when it is accurate;
+3. work with positive-definite matrices through the Cholesky factorisation: sample multivariate normals, evaluate their log densities, and condition one block on another;
+4. carry out probability calculations on the log scale without underflow or overflow;
+5. compare quadrature, the Laplace approximation and Monte Carlo integration in accuracy, cost and dependence on dimension;
+6. derive densities under multivariate changes of variables, including the Jacobians used to move parameters to unconstrained scales;
+7. find posterior modes with Newton's method, and recognise ill-conditioning.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-probability, in particular conditional densities (@eq-conditional) and the change-of-variables formula (@thm-change-of-variables). Multivariable calculus and basic linear algebra.
+:::
+
+## Motivation {#sec-math-motivation}
+
+Almost every quantity in Bayesian inference is an integral against the posterior: posterior means, variances, tail probabilities, predictive densities, and the marginal likelihood $p(y)=\int p(y\mid\theta)\pi(\theta)\,d\theta$. Analytical answers exist only for the conjugate models of @sec-conjugate. Everything else needs one of three strategies:
+
+1. **deterministic numerical integration** (quadrature on a grid);
+2. **analytical approximation** around the posterior mode, which needs optimisation, gradients and Hessians;
+3. **Monte Carlo**, which replaces integrals by averages over random draws.
+
+This chapter develops the mathematics behind all three and makes precise why the third wins in high dimensions. The tools developed here (gradients, Hessians, Cholesky factors, log-scale arithmetic and Jacobians) are used in every later chapter. Hamiltonian Monte Carlo (@sec-hmc) needs gradients, Gibbs sampling for Gaussian models (@sec-gibbs) needs conditional Gaussians, and every sampler needs log-scale arithmetic.
+
+## Definitions and notation {#sec-math-definitions}
+
+For a twice-differentiable $f:\mathbb R^d\to\mathbb R$, the **gradient** $\nabla f(x)$ is the vector of partial derivatives $\partial f/\partial x_j$ and the **Hessian** $\nabla^2 f(x)$ is the $d\times d$ matrix of second partials $\partial^2 f/\partial x_j\partial x_k$, symmetric when the second partials are continuous. For a map $g:\mathbb R^d\to\mathbb R^m$ the **Jacobian** $J_g(x)$ is the $m\times d$ matrix with entries $\partial g_i/\partial x_j$.
+
+::: {#def-positive-definite}
+## Positive-definite matrix
+A symmetric matrix $A\in\mathbb R^{d\times d}$ is **positive definite** (written $A\succ0$) if $v^\top Av>0$ for every non-zero $v\in\mathbb R^d$, and **positive semi-definite** ($A\succeq0$) if $v^\top Av\ge0$. Equivalently, all eigenvalues of $A$ are positive (respectively non-negative).
+:::
+
+The **condition number** of $A\succ0$ is $\kappa(A)=\lambda_{\max}(A)/\lambda_{\min}(A)$. It measures how unequal the scales of $A$ are in different directions. We meet it twice: as a measure of numerical error in solving $Ax=b$, and in @sec-mixing as the reason samplers struggle on posteriors whose scales differ strongly between directions.
+
+## Mathematical development {#sec-math-development}
+
+### Gradients and Hessians of log densities {#sec-math-gradients}
+
+Work with the **log** posterior $h(\theta)=\log p(y\mid\theta)+\log\pi(\theta)$ rather than the posterior itself: sums are easier to differentiate than products, and the unknown normalising constant disappears from every derivative. Two examples recur throughout the book.
+
+::: {#exm-gaussian-gradient}
+## Multivariate normal
+If $h(\theta)=-\tfrac12(\theta-\mu)^\top Q(\theta-\mu)$ with $Q\succ0$ (the log of a $\mathrm N_d(\mu,Q^{-1})$ density up to a constant), then $\nabla h(\theta)=-Q(\theta-\mu)$ and $\nabla^2h(\theta)=-Q$. The Hessian is constant, which is exactly what makes Gaussians easy.
+:::
+
+::: {#prp-logistic-concave}
+## Logistic regression has a concave log posterior
+Let $y_i\in\{0,1\}$, $x_i\in\mathbb R^p$, $p_i(\beta)=\operatorname{logit}^{-1}(x_i^\top\beta)$, and let $\beta\sim\mathrm N_p(m_0,S_0)$ with $S_0\succ0$. The log posterior
+$h(\beta)=\sum_i\{y_i\log p_i+(1-y_i)\log(1-p_i)\}-\tfrac12(\beta-m_0)^\top S_0^{-1}(\beta-m_0)$ has
+$$
+\nabla h(\beta)=X^\top(y-p)-S_0^{-1}(\beta-m_0),\qquad
+\nabla^2h(\beta)=-X^\top W X-S_0^{-1},
+$$ {#eq-logistic-derivatives}
+where $X$ has rows $x_i^\top$ and $W=\operatorname{diag}\{p_i(1-p_i)\}$. Hence $h$ is strictly concave and has at most one maximiser.
+:::
+
+::: {.proof}
+With $\eta_i=x_i^\top\beta$ and $\sigma(\eta)=1/(1+e^{-\eta})$, we have $\sigma'(\eta)=\sigma(\eta)\{1-\sigma(\eta)\}$, so $\frac{d}{d\eta}\log\sigma(\eta)=1-\sigma(\eta)$ and $\frac{d}{d\eta}\log\{1-\sigma(\eta)\}=-\sigma(\eta)$. The $i$-th log-likelihood term therefore has derivative $y_i(1-p_i)-(1-y_i)p_i=y_i-p_i$ with respect to $\eta_i$, and by the chain rule its gradient in $\beta$ is $(y_i-p_i)x_i$. Differentiating again gives $-p_i(1-p_i)x_ix_i^\top$. Summing over $i$ and adding the derivatives of the Gaussian log prior (@exm-gaussian-gradient) gives @eq-logistic-derivatives. For $v\neq0$, $v^\top\nabla^2h\,v=-\sum_ip_i(1-p_i)(x_i^\top v)^2-v^\top S_0^{-1}v<0$, so the Hessian is negative definite everywhere and $h$ is strictly concave.
+:::
+
+Analytic derivatives are error-prone. **Always check them** against central finite differences, $\partial h/\partial\theta_j\approx\{h(\theta+\delta e_j)-h(\theta-\delta e_j)\}/(2\delta)$, whose truncation error is $O(\delta^2)$ and whose rounding error is about $\epsilon_{\text{mach}}\lvert h\rvert/\delta$. A step $\delta\approx10^{-5}$ balances the two for well-scaled problems [@nocedal2006numerical, Section 8.1]. The course function `numerical_gradient()` implements this, and every gradient in `R/` is tested against it.
+
+### Taylor expansion and the Laplace approximation {#sec-math-laplace}
+
+::: {#thm-taylor}
+## Second-order Taylor expansion
+If $h$ is three times continuously differentiable in a neighbourhood of $\hat\theta$, then
+$$
+h(\theta)=h(\hat\theta)+\nabla h(\hat\theta)^\top(\theta-\hat\theta)+\tfrac12(\theta-\hat\theta)^\top\nabla^2h(\hat\theta)(\theta-\hat\theta)+O(\lVert\theta-\hat\theta\rVert^3)
+$$
+as $\theta\to\hat\theta$.
+:::
+
+At an interior mode $\hat\theta$ the gradient vanishes and $A=-\nabla^2h(\hat\theta)$ is positive semi-definite. If $A\succ0$, near the mode
+$$
+e^{h(\theta)}\approx e^{h(\hat\theta)}\exp\{-\tfrac12(\theta-\hat\theta)^\top A(\theta-\hat\theta)\},
+$$
+which is an unnormalised Gaussian density. Integrating it needs the following identity.
+
+::: {#prp-gaussian-integral}
+## Gaussian integral
+For $A\succ0$, $\displaystyle\int_{\mathbb R^d}\exp\{-\tfrac12 x^\top Ax\}\,dx=(2\pi)^{d/2}\lvert A\rvert^{-1/2}$.
+:::
+
+::: {.proof}
+Write $A=LL^\top$ (Cholesky, @thm-cholesky) and substitute $z=L^\top x$, so $x=L^{-\top}z$ and $dx=\lvert\det L^{-\top}\rvert\,dz=\lvert A\rvert^{-1/2}dz$. Then $x^\top Ax=\lVert z\rVert^2$, and the integral factorises into $d$ copies of $\int e^{-z^2/2}dz=\sqrt{2\pi}$.
+:::
+
+Combining the expansion with @prp-gaussian-integral gives the **Laplace approximation**: the posterior is approximated by $\mathrm N(\hat\theta,A^{-1})$, and the normalising constant $Z=\int e^{h(\theta)}d\theta$ (the marginal likelihood, when $h$ is the log of prior times likelihood) by
+$$
+\log Z\approx h(\hat\theta)+\frac d2\log(2\pi)-\frac12\log\lvert A\rvert.
+$$ {#eq-laplace}
+@eq-laplace is exact when $h$ is quadratic. For a posterior based on $n$ independent observations under regularity conditions, $h$ grows like $n$, the posterior concentrates at rate $n^{-1/2}$, and the relative error of @eq-laplace is $O(n^{-1})$ [@tierney1986accurate]. The same reasoning underlies the Bernstein–von Mises theorem, which says that posteriors become approximately Gaussian in large samples [@vandervaart1998asymptotic, Chapter 10]. In finite samples the approximation can be poor. It fails when the posterior is skewed, multimodal, or piled up against a boundary of the parameter space, and the worked example below shows a moderate failure.
+
+### Positive-definite matrices and the Cholesky factorisation {#sec-math-cholesky}
+
+::: {#prp-covariance-psd}
+## Covariance matrices are positive semi-definite
+If $X\in\mathbb R^d$ has finite second moments and covariance $\Sigma$, then $\Sigma\succeq0$. It is positive definite unless some non-trivial linear combination $v^\top X$ is almost surely constant.
+:::
+
+::: {.proof}
+$v^\top\Sigma v=\operatorname{Var}(v^\top X)\ge0$, and $\operatorname{Var}(v^\top X)=0$ if and only if $v^\top X$ is almost surely constant.
+:::
+
+::: {#thm-cholesky}
+## Cholesky factorisation
+Every $A\succ0$ can be written uniquely as $A=LL^\top$ with $L$ lower triangular with positive diagonal. The factorisation costs about $d^3/3$ floating-point operations and is backward stable [@higham2002accuracy, Chapter 10].
+:::
+
+The Cholesky factor is the workhorse of Gaussian computation:
+
+- **Sampling.** If $z\sim\mathrm N(0,I_d)$ then $\mu+Lz\sim\mathrm N(\mu,LL^\top)=\mathrm N(\mu,A)$, because $\operatorname{Cov}(Lz)=LL^\top$.
+- **Log-determinants.** $\log\lvert A\rvert=2\sum_j\log L_{jj}$. This avoids computing $\lvert A\rvert$ itself, which underflows or overflows for moderate $d$.
+- **Quadratic forms and linear systems.** $x^\top A^{-1}x=\lVert L^{-1}x\rVert^2$, computed by one triangular solve in $O(d^2)$. Explicitly inverting $A$ is slower and less accurate, so do not do it.
+
+R's `chol()` returns the *upper* triangular factor $U=L^\top$ with $A=U^\top U$; the course functions `rmvnorm_chol()` and `dmvnorm_log()` in `R/utilities/numerics.R` use it.
+
+The next result is used repeatedly for Gibbs sampling (@sec-gibbs) and state-space models (@sec-time-series).
+
+::: {#thm-gaussian-conditioning}
+## Conditioning a multivariate normal
+Let $x=(x_1,x_2)\sim\mathrm N(\mu,\Sigma)$ with conformable partitions $\mu=(\mu_1,\mu_2)$, $\Sigma=\begin{pmatrix}\Sigma_{11}&\Sigma_{12}\\\Sigma_{21}&\Sigma_{22}\end{pmatrix}\succ0$ and precision $Q=\Sigma^{-1}=\begin{pmatrix}Q_{11}&Q_{12}\\Q_{21}&Q_{22}\end{pmatrix}$. Then
+$$
+x_1\mid x_2\sim\mathrm N\big(\mu_1+\Sigma_{12}\Sigma_{22}^{-1}(x_2-\mu_2),\ \Sigma_{11}-\Sigma_{12}\Sigma_{22}^{-1}\Sigma_{21}\big)
+=\mathrm N\big(\mu_1-Q_{11}^{-1}Q_{12}(x_2-\mu_2),\ Q_{11}^{-1}\big).
+$$
+:::
+
+::: {.proof}
+By @eq-conditional, $p(x_1\mid x_2)\propto p(x_1,x_2)$ as a function of $x_1$. Expanding the exponent, with $r_2=x_2-\mu_2$,
+$$
+-\tfrac12(x-\mu)^\top Q(x-\mu)=-\tfrac12(x_1-\mu_1)^\top Q_{11}(x_1-\mu_1)-(x_1-\mu_1)^\top Q_{12}r_2+\text{(terms free of }x_1).
+$$
+Completing the square, this equals $-\tfrac12(x_1-m)^\top Q_{11}(x_1-m)+\text{const}$ with $m=\mu_1-Q_{11}^{-1}Q_{12}r_2$, the kernel of $\mathrm N(m,Q_{11}^{-1})$. ($Q_{11}\succ0$ as a principal submatrix of $Q\succ0$.) The block-inverse identities $Q_{11}^{-1}=\Sigma_{11}-\Sigma_{12}\Sigma_{22}^{-1}\Sigma_{21}$ (the Schur complement) and $-Q_{11}^{-1}Q_{12}=\Sigma_{12}\Sigma_{22}^{-1}$ [@harville1997matrix, Chapter 8] give the covariance form.
+:::
+
+::: {.callout-tip}
+## Intuition
+The precision form is the one to remember. The conditional precision of $x_1$ is simply the block $Q_{11}$, the information about $x_1$ in the joint model. Conditioning *adds information*, so it can only reduce variance: $\Sigma_{11}-\Sigma_{12}\Sigma_{22}^{-1}\Sigma_{21}\preceq\Sigma_{11}$.
+:::
+
+### Working on the log scale {#sec-math-logscale}
+
+Double-precision numbers have about 16 significant digits and range from about $2.2\times10^{-308}$ (smallest normalised) to $1.8\times10^{308}$ [@goldberg1991every]. A likelihood of $n=1000$ observations, each with density around $0.05$, equals $0.05^{1000}\approx10^{-1301}$, which underflows to exactly zero. All computation is therefore done with log densities, and the hazardous steps are those that must leave the log scale: sums of probabilities.
+
+::: {#prp-logsumexp}
+## Log-sum-exp
+For $a_1,\dots,a_n\in\mathbb R$ with $m=\max_i a_i$,
+$$
+\log\sum_{i=1}^n e^{a_i}=m+\log\sum_{i=1}^n e^{a_i-m},\qquad m\le\log\sum_ie^{a_i}\le m+\log n.
+$$
+:::
+
+::: {.proof}
+The identity follows from factoring $e^m$ out of the sum. Each term $e^{a_i-m}\in(0,1]$ and at least one equals one, so the sum lies in $[1,n]$, which gives the bounds.
+:::
+
+The right-hand side never overflows (every exponent is $\le0$) and never underflows to $\log0$ (one term equals one). It is accurate to a small multiple of machine precision [@blanchard2021accurately]. Related functions with good accuracy are `log1p(x)` $=\log(1+x)$ for small $x$, `expm1(x)` $=e^x-1$, and `log1mexp(a)` $=\log(1-e^{-a})$ [@maechler2012accurately]. All are in `R/utilities/numerics.R`.
+
+```{r}
+#| label: math-underflow
+log_lik_terms <- dnorm(rnorm(1000, sd = 3), log = TRUE)   # 1000 log-density values
+c(product_scale = prod(exp(log_lik_terms)),             # underflows to exactly 0
+  log_scale = sum(log_lik_terms))                       # perfectly representable
+# log of a mean of likelihoods: naive version fails, stable version does not
+c(naive = log(mean(exp(log_lik_terms - 800))), stable = log_mean_exp(log_lik_terms - 800))
+```
+
+### Numerical integration {#sec-math-quadrature}
+
+For a one-dimensional integral $I=\int_a^bf(x)\,dx$ on an equally spaced grid with spacing $\delta$, the composite **trapezoid rule** has error $O(\delta^2)$ and the composite **Simpson rule** error $O(\delta^4)$ when $f$ is smooth enough [@givens2012computational, Chapter 5]. Gaussian quadrature does even better for analytic integrands. In one or two dimensions these methods are excellent and are our reference for validating samplers: the course function `grid_posterior()` normalises a log density on a grid with Simpson's rule.
+
+In $d$ dimensions, a tensor-product grid with $m$ points per axis costs $N=m^d$ evaluations. An $O(\delta^k)$ rule with $\delta\propto1/m$ then has error
+$$
+O(m^{-k})=O(N^{-k/d}),
+$$ {#eq-curse-dimensionality}
+which degrades rapidly with $d$. This is the **curse of dimensionality** for quadrature. Monte Carlo integration (developed in @sec-monte-carlo) estimates $\int f(x)\pi(x)\,dx$ by $\frac1N\sum_tf(X_t)$ with $X_t\sim\pi$ independent. Its error is $O_p(N^{-1/2})$ *whatever* the dimension, with a constant equal to the standard deviation of $f(X)$. The experiment below shows where the crossover occurs.
+
+### Multivariate changes of variables {#sec-math-jacobians}
+
+@thm-change-of-variables applies in any dimension. Two uses are central to computation.
+
+**Moving to unconstrained space.** Samplers and optimisers work best on $\mathbb R^d$. Common transformations are $\sigma=e^\eta$ for positive parameters (log-Jacobian $\eta$), $p=\operatorname{logit}^{-1}(\eta)$ for probabilities (log-Jacobian $\log p+\log(1-p)$), and stick-breaking or softmax-type maps for simplexes [@stan2026reference]. If the target is a density for the constrained parameter, the sampler must target the transformed density *including* the log-Jacobian.
+
+**Generating random variables.** The classical Box–Muller method is a change of variables.
+
+::: {#thm-box-muller}
+## Box–Muller transformation
+If $U_1,U_2\stackrel{\text{iid}}\sim\mathrm U(0,1)$, then $Z_1=\sqrt{-2\log U_1}\cos(2\pi U_2)$ and $Z_2=\sqrt{-2\log U_1}\sin(2\pi U_2)$ are independent $\mathrm N(0,1)$ variables [@box1958note].
+:::
+
+::: {.proof}
+Let $R=\sqrt{-2\log U_1}$ and $\Theta=2\pi U_2$. By @thm-change-of-variables, $\Theta\sim\mathrm U(0,2\pi)$ and $R$ has density $p_R(r)=re^{-r^2/2}$ on $(0,\infty)$ (inverse $u_1=e^{-r^2/2}$ with $\lvert du_1/dr\rvert=re^{-r^2/2}$), independently of $\Theta$. The map $(r,\vartheta)\mapsto(z_1,z_2)=(r\cos\vartheta,r\sin\vartheta)$ is a bijection from $(0,\infty)\times(0,2\pi)$ onto the plane minus a ray (a null set), and its inverse has Jacobian determinant $1/r$. Hence $p(z_1,z_2)=\frac{1}{2\pi}re^{-r^2/2}\cdot\frac1r=\frac1{2\pi}e^{-(z_1^2+z_2^2)/2}=\phi(z_1)\phi(z_2)$.
+:::
+
+### Optimisation {#sec-math-optimisation}
+
+Posterior modes are needed for the Laplace approximation, for initialising samplers, and as point estimates (@sec-decision). **Newton's method** for maximising $h$ iterates
+$$
+\theta_{k+1}=\theta_k-\big[\nabla^2h(\theta_k)\big]^{-1}\nabla h(\theta_k),
+$$
+which maximises the quadratic Taylor model of $h$ at $\theta_k$. Near a maximiser $\hat\theta$ with $\nabla^2h(\hat\theta)\prec0$ and Lipschitz Hessian, convergence is *quadratic*: $\lVert\theta_{k+1}-\hat\theta\rVert\le C\lVert\theta_k-\hat\theta\rVert^2$ [@nocedal2006numerical, Theorem 3.5]. Far from the mode a full Newton step can overshoot, so practical implementations include a line search that shortens the step until $h$ increases. Quasi-Newton methods (BFGS, available in R's `optim()`) build a Hessian approximation from gradients alone.
+
+Numerical difficulty in optimisation is governed by the condition number of the Hessian. When $\kappa(\nabla^2h)$ is large, gradient methods zig-zag, and the same geometry slows down random-walk MCMC (@sec-mixing). **Rescaling and decorrelating parameters** (for instance, centring predictors in regression) is often the most effective fix for both.
+
+## Worked example: a dose–response posterior {#sec-math-worked}
+
+The bioassay experiment of @racine1986bayesian, analysed in @gelman2013bda [Section 3.7], gave five animals each one of four doses $x_i$ (log g/ml) and recorded deaths $y_i$:
+
+```{r}
+#| label: math-bioassay-data
+bioassay <- data.frame(dose = c(-0.86, -0.30, -0.05, 0.73), n = 5, deaths = c(0, 1, 3, 5))
+bioassay
+```
+
+Model: $y_i\mid\alpha,\beta\sim\mathrm{Bin}(n_i,\operatorname{logit}^{-1}(\alpha+\beta x_i))$, with independent priors $\alpha,\beta\sim\mathrm N(0,10^2)$. We will (i) find the posterior mode by Newton's method, (ii) build the Laplace approximation, and (iii) compare it with an accurate grid computation.
+
+**Step 1: derivatives.** Expanding the binomial data to one Bernoulli row per animal, the log posterior and gradient are those of @prp-logistic-concave, implemented in `logistic_regression_model()`. The Hessian is @eq-logistic-derivatives with $S_0=100I$.
+
+```{r}
+#| label: math-bioassay-model
+X <- cbind(1, rep(bioassay$dose, bioassay$n))
+y <- unlist(mapply(function(n, d) c(rep(1, d), rep(0, n - d)), bioassay$n, bioassay$deaths,
+                   SIMPLIFY = FALSE))                      # one 0/1 row per animal
+model <- logistic_regression_model(X, y, prior_sd = 10)
+hess <- function(b) {
+  p <- inv_logit(as.vector(X %*% b))
+  -crossprod(X * (p * (1 - p)), X) - diag(1 / 100, 2)
+}
+# Always check analytic derivatives against finite differences
+b_test <- c(0.5, 5)
+rbind(analytic = model$grad(b_test),
+      finite_difference = numerical_gradient(model$log_density, b_test))
+```
+
+**Step 2: the mode and the Laplace approximation.**
+
+```{r}
+#| label: math-bioassay-laplace
+la <- laplace_approximation(model$log_density, model$grad, hess, x0 = c(0, 0))
+la$mode; la$iterations
+sqrt(diag(la$cov))          # approximate posterior standard deviations
+la$log_Z                    # Laplace estimate of log p(y) (for the Bernoulli-expanded data)
+```
+
+Newton's method converges in a handful of iterations because the log posterior is strictly concave (@prp-logistic-concave).
+
+**Step 3: an accurate reference by quadrature.** In two dimensions a fine grid is affordable.
+
+```{r}
+#| label: math-bioassay-grid
+a_grid <- seq(-4, 8, length.out = 401); b_grid <- seq(-10, 45, length.out = 601)
+lp <- outer(a_grid, b_grid, Vectorize(function(a, b) model$log_density(c(a, b))))
+m <- max(lp)
+inner <- apply(exp(lp - m), 1, simpson, x = b_grid)       # integrate over beta
+log_Z_grid <- m + log(simpson(inner, a_grid))             # then over alpha
+post <- exp(lp - log_Z_grid)
+mean_grid <- c(alpha = sum(post * a_grid) , beta = sum(t(post) * b_grid)) * diff(a_grid[1:2]) * diff(b_grid[1:2])
+c(log_Z_grid = log_Z_grid, log_Z_laplace = la$log_Z)
+rbind(grid_mean = mean_grid, laplace_mode = la$mode)
+```
+
+```{r}
+#| label: fig-math-bioassay
+#| fig-cap: "Bioassay posterior: contours of the exact posterior density (grid, blue) and of its Laplace approximation (orange, dashed). The exact posterior is skewed towards large $\\beta$, which the symmetric Gaussian cannot capture."
+#| fig-height: 4.2
+contour(a_grid, b_grid, post, nlevels = 6, drawlabels = FALSE, col = course_cols[["blue"]],
+        xlab = expression(alpha), ylab = expression(beta), xlim = c(-2, 4), ylim = c(-2, 25))
+lap_dens <- outer(a_grid, b_grid, Vectorize(function(a, b) exp(dmvnorm_log(c(a, b), la$mode, la$cov))))
+contour(a_grid, b_grid, lap_dens, nlevels = 6, drawlabels = FALSE, add = TRUE,
+        col = course_cols[["orange"]], lty = 2)
+points(la$mode[1], la$mode[2], pch = 3, col = course_ink)
+legend("topleft", c("exact (grid)", "Laplace"), col = c(course_cols[["blue"]], course_cols[["orange"]]),
+       lty = c(1, 2), bty = "n", cex = 0.85)
+```
+
+**Interpretation.** The Laplace approximation locates the bulk of the posterior correctly but misses its skewness: the exact posterior mean of $\beta$ (about 8.9) is far from the mode (about 6.5), and the two estimates of $\log Z$ differ by about 0.05, a 5% error in $Z$. With five animals per dose there is not enough data for the Bernstein–von Mises approximation to be accurate. This is a recurring theme: approximations based on the mode are reliable only when the posterior is close to Gaussian, which must be *checked* rather than assumed.
+
+## R implementation {#sec-math-r}
+
+The Newton and Laplace functions used above are in `R/utilities/optimisation.R`:
+
+```{r}
+#| file: R/utilities/optimisation.R
+```
+
+Two design choices deserve comment. The line search makes the method *monotone*, so the objective never decreases, which prevents divergence from poor starting points. And the Laplace function refuses to proceed if $-\nabla^2h$ is not positive definite at the returned point, because then the point is not a strict local maximum and @eq-laplace is meaningless.
+
+## Computational experiment: accuracy versus cost and dimension {#sec-math-experiment}
+
+**One dimension.** Take $Z=\int_0^1\theta^7(1-\theta)^{13}\,d\theta=B(8,14)$, the normalising constant of a beta-binomial posterior. We compare the trapezoid and Simpson rules, plain Monte Carlo with uniform draws, and the Laplace approximation on the logit scale, measuring relative error against the exact value.
+
+```{r}
+#| label: fig-math-error-cost
+#| fig-cap: "Relative error of four integration methods against the number of integrand evaluations for $B(8,14)$. Quadrature errors fall like $N^{-2}$ and $N^{-4}$, Monte Carlo like $N^{-1/2}$ (median over 50 replications); the Laplace approximation costs a few evaluations but has a fixed error."
+#| fig-height: 4
+f <- function(t) t^7 * (1 - t)^13
+Z <- beta(8, 14)
+Ns <- c(9, 17, 33, 65, 129, 257, 513, 1025, 2049)
+trap <- sapply(Ns, function(n) { x <- seq(0, 1, length.out = n); fx <- f(x)
+  sum(diff(x) * (head(fx, -1) + tail(fx, -1)) / 2) })
+simp <- sapply(Ns, function(n) { x <- seq(0, 1, length.out = n); simpson(f(x), x) })
+set.seed(201)
+mc <- sapply(Ns, function(n) median(abs(replicate(50, mean(f(runif(n)))) / Z - 1)))
+# Laplace on eta = logit(theta): integrand f(theta(eta)) * theta (1 - theta)
+h <- function(e) { t <- inv_logit(e); 8 * log(t) + 14 * log(1 - t) }
+lap <- laplace_approximation(h, function(e) 8 - 22 * inv_logit(e),
+                             function(e) matrix(-22 * inv_logit(e) * (1 - inv_logit(e))), 0)
+err <- cbind(trapezoid = abs(trap / Z - 1), Simpson = abs(simp / Z - 1), `Monte Carlo` = mc)
+err[err == 0] <- NA                                   # exact to machine precision: not plottable on a log axis
+matplot(Ns, err, log = "xy", type = "b", pch = 16, lty = 1, cex = 0.7,
+        col = course_cols[c("blue", "orange", "aqua")], xlab = "number of evaluations N",
+        ylab = "relative error")
+abline(h = abs(exp(lap$log_Z) / Z - 1), lty = 2, col = course_muted)
+legend("bottomleft", c(colnames(err), "Laplace (logit scale)"), pch = c(16, 16, 16, NA),
+       lty = c(1, 1, 1, 2), col = c(course_cols[c("blue", "orange", "aqua")], course_muted),
+       bty = "n", cex = 0.8)
+```
+
+**Many dimensions.** Consider $g(x)=\prod_{j=1}^d\frac\pi2\sin(\pi x_j)$ on $[0,1]^d$, whose integral is exactly 1. The midpoint rule with $m$ points per axis gives exactly $\{(\pi/2m)/\sin(\pi/2m)\}^d$, so its error can be computed without evaluating $m^d$ points. Uniform Monte Carlo with $N$ draws has standard error $\sqrt{\{(\pi^2/8)^d-1\}/N}$. At a fixed budget of $N=10^6$ evaluations:
+
+```{r}
+#| label: math-dimension
+N <- 1e6
+d <- 1:10
+m <- floor(N^(1 / d))                                   # points per axis within budget
+grid_err <- abs(((pi / (2 * m)) / sin(pi / (2 * m)))^d - 1)
+mc_se <- sqrt(((pi^2 / 8)^d - 1) / N)
+data.frame(d, points_per_axis = m, midpoint_error = signif(grid_err, 3), mc_std_error = signif(mc_se, 3))
+```
+
+The grid wins easily in one or two dimensions. By $d=4$ Monte Carlo is already more accurate at the same cost, and at $d=10$ the grid has only 3 points per axis. Posteriors in applied work routinely have tens to thousands of dimensions, which is why the rest of this book is about Monte Carlo. Monte Carlo has its own dimension problem, though: drawing *independent* samples from a high-dimensional posterior is usually impossible. Markov chains (@sec-markov-chains) are the answer.
+
+## Diagnostics and validation {#sec-math-validation}
+
+- **Derivatives**: compare analytic gradients and Hessians with finite differences at several random points, as in Step 1 of the worked example. The relative discrepancy should be around $10^{-7}$ or smaller.
+- **Optimisation**: report the gradient norm at the solution and the number of iterations. Check that $-\nabla^2h(\hat\theta)$ is positive definite (`chol()` succeeds). Restart from several points: a non-concave $h$ can have several modes.
+- **Quadrature**: halve the grid spacing and check that the answer changes by much less than the required accuracy. Check that the grid covers the region where the integrand is non-negligible, for example by confirming that the integrand at the boundary is tiny relative to its maximum.
+- **Laplace approximation**: compare against quadrature in low dimensions, or against MCMC (later chapters). Report it as an approximation, never as exact.
+- **Log-scale code**: test functions such as `log_sum_exp()` at extreme inputs ($\pm1000$, $-\infty$). The tests in `tests/testthat/test-numerics.R` do this.
+
+## Interpretation {#sec-math-interpretation}
+
+The three integration strategies fail in different ways. Quadrature is extremely accurate in low dimensions and useless in high ones. The Laplace approximation is cheap and works well when the posterior is nearly Gaussian, and it gives no warning when it is not. Monte Carlo is the only method whose error rate does not deteriorate with dimension, and it has a computable standard error. That last property makes its accuracy checkable, a theme developed in the rest of the book.
+
+## Limitations and common errors {#sec-math-errors}
+
+- **Inverting matrices.** Use `chol()`, `backsolve()` and `solve(A, b)` rather than `solve(A) %*% b`. The explicit inverse is slower and amplifies rounding errors when $\kappa(A)$ is large.
+- **Computing determinants directly.** Use $2\sum\log L_{jj}$, or `determinant(A, logarithm = TRUE)`.
+- **Leaving the log scale too early.** Exponentiate only at the very end, and only quantities of moderate size. Use `log_sum_exp()` for sums.
+- **Missing log-Jacobians** when sampling or optimising on a transformed scale. The mode of a density is *not* invariant under reparameterisation, because the Jacobian changes the function being maximised.
+- **Trusting a Laplace approximation for a skewed or bounded posterior.** Variance parameters near zero and probabilities near 0 or 1 are typical failure cases.
+- **Assuming a unique mode.** Strict concavity (as in @prp-logistic-concave) guarantees it. Without concavity, check it.
+
+## Chapter summary {#sec-math-summary}
+
+- Work with log densities. Their gradients and Hessians do not involve the normalising constant, and they must be checked by finite differences.
+- A second-order Taylor expansion at the mode gives the Laplace approximation (@eq-laplace): exact for Gaussians, with error $O(n^{-1})$ under regularity conditions, and unreliable for skewed, multimodal or boundary-constrained posteriors.
+- Positive-definite matrices are handled through Cholesky factors for sampling, log-determinants and solving systems. Gaussian conditioning (@thm-gaussian-conditioning) is simplest in precision form.
+- Log-sum-exp (@prp-logsumexp) and related functions keep probability computations within floating-point range.
+- Quadrature error at fixed cost grows rapidly with dimension (@eq-curse-dimensionality). Monte Carlo error does not, which motivates the rest of the book.
+- Newton's method converges quadratically near a non-degenerate mode, and ill-conditioning harms both optimisation and sampling.
+
+## Exercises {#sec-math-exercises}
+
+::: {#exr-math-1}
+**[Mathematical ★]** For Poisson regression $y_i\sim\mathrm{Poisson}(e^{x_i^\top\beta})$ with prior $\beta\sim\mathrm N(0,s^2I)$, derive the gradient and Hessian of the log posterior, and show that it is strictly concave.
+:::
+
+::: {#exr-math-2}
+**[Proof ★★]** Prove the identity $-Q_{11}^{-1}Q_{12}=\Sigma_{12}\Sigma_{22}^{-1}$ used in @thm-gaussian-conditioning, starting from $\Sigma Q=I$.
+:::
+
+::: {#exr-math-3}
+**[Mathematical ★★]** Apply the Laplace approximation to $\Gamma(a+1)=\int_0^\infty x^ae^{-x}\,dx$ (a) on the original scale and (b) on the log scale $x=e^u$. Show that (b) gives Stirling's formula $\Gamma(a+1)\approx\sqrt{2\pi a}\,a^ae^{-a}$ times a factor that tends to 1, and compare the accuracy of (a) and (b) numerically for $a=2,10,50$.
+:::
+
+::: {#exr-math-4}
+**[R ★]** Write a function that computes the log-likelihood of $n=10^4$ independent $t_3$ observations in two ways: as `log(prod(dt(y, 3)))` and as `sum(dt(y, 3, log = TRUE))`. Explain the output.
+:::
+
+::: {#exr-math-5}
+**[Mathematical ★★]** Let $\theta\in(0,1)$ have density $\mathrm{Beta}(a,b)$ and let $\eta=\operatorname{logit}\theta$. Derive the density of $\eta$. Show that the mode of $\eta$ maps back to $a/(a+b)$, not to the Beta mode $(a-1)/(a+b-2)$, and explain why.
+:::
+
+::: {#exr-math-6}
+**[Simulation ★★]** Implement Box–Muller (@thm-box-muller) and verify, using $10^6$ pairs, that $Z_1$ and $Z_2$ have mean 0, variance 1 and correlation 0, and that $\mathbb P(Z_1>1.96)$ matches $1-\Phi(1.96)$. Report each check in Monte Carlo standard errors.
+:::
+
+::: {#exr-math-7}
+**[R ★★]** For $\Sigma=\begin{pmatrix}1&\rho\\\rho&1\end{pmatrix}$, compute $\kappa(\Sigma)$ as a function of $\rho$, and run R's `optim()` with `method = "CG"` (conjugate gradients) on $h(x)=-\tfrac12x^\top\Sigma^{-1}x$ from $(5,5)$ for $\rho\in\{0,0.9,0.99,0.999\}$. Record the number of function evaluations. What do you observe?
+:::
+
+::: {#exr-math-8}
+**[Critique ★★]** A colleague reports a marginal likelihood for a hierarchical model computed with the Laplace approximation and uses it to choose between models. The posterior for a variance component has substantial mass near zero. Explain what could go wrong and what you would do instead.
+:::
+
+::: {#exr-math-9}
+**[Research ★★★]** The Laplace approximation can be improved by expanding to higher order, or by applying it to ratios of integrals so that leading error terms cancel [@tierney1986accurate]. Implement the Tierney–Kadane approximation to the posterior mean of $\beta$ in the bioassay example, $\mathbb E[\beta\mid y]=\int\beta e^{h}/\int e^h$, by applying @eq-laplace separately to numerator and denominator (with $\log\beta+h$ in the numerator, restricted to $\beta>0$). Compare it with the grid answer and with the posterior mode.
+:::
+
+## Further reading {#sec-math-reading}
+
+- @nocedal2006numerical: optimisation, line searches, Newton and quasi-Newton methods, finite differences.
+- @higham2002accuracy and @goldberg1991every: floating-point arithmetic and the stability of numerical algorithms, including Cholesky.
+- @harville1997matrix: matrix algebra for statisticians, including partitioned inverses and Schur complements.
+- @givens2012computational: numerical integration, optimisation and Monte Carlo from a statistical perspective.
+- @tierney1986accurate: the Laplace approximation for posterior moments and its accuracy.
+- @blanchard2021accurately: a careful error analysis of log-sum-exp and softmax.
+
+## Solutions {#sec-math-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-math-1
+With $\mu_i=e^{x_i^\top\beta}$, $h(\beta)=\sum_i(y_ix_i^\top\beta-\mu_i)-\lVert\beta\rVert^2/(2s^2)+\text{const}$. Then $\nabla h=X^\top(y-\mu)-\beta/s^2$ and $\nabla^2h=-X^\top\operatorname{diag}(\mu)X-I/s^2$. For $v\neq0$, $v^\top\nabla^2hv=-\sum_i\mu_i(x_i^\top v)^2-\lVert v\rVert^2/s^2<0$, so $h$ is strictly concave.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-math-2
+The $(1,2)$ block of $\Sigma Q=I$ gives $\Sigma_{11}Q_{12}+\Sigma_{12}Q_{22}=0$, and the $(2,2)$ block gives $\Sigma_{21}Q_{12}+\Sigma_{22}Q_{22}=I$. Using $Q\Sigma=I$ instead, the $(1,2)$ block gives $Q_{11}\Sigma_{12}+Q_{12}\Sigma_{22}=0$, i.e. $Q_{12}=-Q_{11}\Sigma_{12}\Sigma_{22}^{-1}$. Multiplying on the left by $-Q_{11}^{-1}$ gives $-Q_{11}^{-1}Q_{12}=\Sigma_{12}\Sigma_{22}^{-1}$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-math-3
+(a) $h(x)=a\log x-x$, mode $\hat x=a$, $h''(\hat x)=-1/a$, so $\Gamma(a+1)\approx a^ae^{-a}\sqrt{2\pi a}$. (b) With $x=e^u$ the integrand becomes $e^{(a+1)u-e^u}$ (including the Jacobian $e^u$); mode $\hat u=\log(a+1)$, second derivative $-(a+1)$, giving $\Gamma(a+1)\approx(a+1)^{a+1}e^{-(a+1)}\sqrt{2\pi/(a+1)}$. Both are Stirling-type formulas with relative error $O(1/a)$. Numerically:
+```{r}
+#| eval: false
+a <- c(2, 10, 50)
+orig <- a * log(a) - a + 0.5 * log(2 * pi * a)
+logscale <- (a + 1) * log(a + 1) - (a + 1) + 0.5 * log(2 * pi / (a + 1))
+cbind(a, rel_err_original = exp(orig - lgamma(a + 1)) - 1, rel_err_log = exp(logscale - lgamma(a + 1)) - 1)
+```
+Both errors are about $-1/(12a)$ in size. The log-scale version is slightly better for small $a$, because the integrand is more nearly Gaussian on that scale.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-math-4
+`prod(dt(y, 3))` underflows to 0, so its log is `-Inf`. The sum of log densities is a finite number of order $-1.7\times10^4$. Products of many densities must be accumulated as sums of logs.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-math-5
+$\theta=\operatorname{logit}^{-1}(\eta)$, $d\theta/d\eta=\theta(1-\theta)$, so $p(\eta)=\theta^{a-1}(1-\theta)^{b-1}\theta(1-\theta)/B(a,b)=\theta^a(1-\theta)^b/B(a,b)$. Maximising $a\log\theta+b\log(1-\theta)$ gives $\theta=a/(a+b)$. The mode is not invariant because the Jacobian factor $\theta(1-\theta)$ changes the function being maximised. Means, quantiles and probabilities of events transform consistently; modes and densities do not.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-math-6
+```{r}
+#| eval: false
+set.seed(3)
+u1 <- runif(1e6); u2 <- runif(1e6)
+r <- sqrt(-2 * log(u1)); z1 <- r * cos(2 * pi * u2); z2 <- r * sin(2 * pi * u2)
+n <- 1e6
+c(z_mean = mean(z1) / (1 / sqrt(n)), z_var = (var(z1) - 1) / sqrt(2 / n),
+  z_cor = cor(z1, z2) / (1 / sqrt(n)),
+  z_tail = (mean(z1 > 1.96) - pnorm(-1.96)) / sqrt(pnorm(-1.96) * (1 - pnorm(-1.96)) / n))
+```
+Each entry should be of order 1. The standard errors use $\operatorname{Var}(Z^2)=2$ for the variance and $1/\sqrt n$ for the correlation under independence.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-math-7
+The eigenvalues are $1\pm\rho$, so $\kappa=(1+\rho)/(1-\rho)$: 1, 19, 199, 1999. The number of function evaluations used by conjugate gradients with numerical gradients grows with $\kappa$, and with default tolerances the method may stop early, away from the optimum, for $\rho=0.999$. Badly conditioned problems are hard for first-order methods. The analogous effect on random-walk samplers is quantified in @sec-mixing.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-math-8
+When a variance component has mass near zero, the posterior on that scale is strongly skewed and truncated at the boundary, and the mode may lie at or near zero, where the Hessian is unreliable. The Laplace estimate of $\log p(y)$ can then be badly wrong, and errors of a few units on the log scale change Bayes factors by orders of magnitude. Better options: compute the marginal likelihood by a method with checkable error (bridge sampling or tempering, @sec-model-comparison), apply the approximation on a transformed scale ($\log\tau$) where the posterior is more Gaussian, and check the approximation against an alternative. Also ask whether marginal likelihoods are the right comparison tool at all (@sec-model-comparison).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-math-9
+Let $h_1(\theta)=\log\beta+h(\theta)$ on $\beta>0$. Find its mode $\hat\theta_1$ and Hessian $H_1$ by Newton's method, and similarly $\hat\theta,H$ for $h$. Then $\mathbb E[\beta\mid y]\approx\exp\{h_1(\hat\theta_1)-h(\hat\theta)\}\,\lvert H\rvert^{1/2}/\lvert H_1\rvert^{1/2}$. Because the posterior mass at $\beta\le0$ is negligible here, restricting to $\beta>0$ is harmless. The result should be much closer to the grid mean than the mode is, because the $O(n^{-1})$ error terms of numerator and denominator largely cancel.
+:::

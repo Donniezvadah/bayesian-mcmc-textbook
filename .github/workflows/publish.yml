@@ -1,0 +1,132 @@
+# Test the course code, render the book, check links, and deploy to GitHub Pages.
+#
+# One-time setup: in the repository's Settings -> Pages, set "Source" to
+# "GitHub Actions". Pull requests are tested and built but not deployed.
+#
+# Reproducibility: R and Quarto versions are pinned below, and R packages are
+# restored at the exact versions recorded in renv.lock (renv is used only to
+# restore; it is not activated in the project). Computational results are
+# cached in _freeze/ (freeze: auto), which is committed, so chapters are
+# re-executed in CI only when their source has changed.
+#
+# To update the pinned versions: change R_VERSION / QUARTO_VERSION here, and
+# regenerate renv.lock as described in README.md.
+
+name: Test, build and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  R_VERSION: "4.6.1"
+  QUARTO_VERSION: "1.10.18"
+
+jobs:
+  test:
+    name: R test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ env.R_VERSION }}
+          use-public-rspm: true
+
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: rlib-${{ runner.os }}-${{ env.R_VERSION }}-${{ hashFiles('renv.lock') }}
+
+      - name: Restore R packages from renv.lock
+        run: |
+          Rscript -e 'if (!requireNamespace("renv", quietly = TRUE)) install.packages("renv")'
+          Rscript -e 'renv::restore(lockfile = "renv.lock", library = Sys.getenv("R_LIBS_USER"), prompt = FALSE)'
+
+      - name: Run tests
+        run: Rscript tests/run-tests.R
+
+  build:
+    name: Render book
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ env.R_VERSION }}
+          use-public-rspm: true
+
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: rlib-${{ runner.os }}-${{ env.R_VERSION }}-${{ hashFiles('renv.lock') }}
+
+      - name: Restore R packages from renv.lock
+        run: |
+          Rscript -e 'if (!requireNamespace("renv", quietly = TRUE)) install.packages("renv")'
+          Rscript -e 'renv::restore(lockfile = "renv.lock", library = Sys.getenv("R_LIBS_USER"), prompt = FALSE)'
+
+      - uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: ${{ env.QUARTO_VERSION }}
+
+      - name: Configure GitHub Pages
+        id: pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+
+      - name: Write CI profile (repository and site URLs from the GitHub context)
+        env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          {
+            echo "book:"
+            echo "  repo-url: \"${REPO_URL}\""
+            echo "  repo-branch: main"
+            echo "  repo-actions: [edit, issue, source]"
+            if [ -n "${SITE_URL}" ]; then echo "  site-url: \"${SITE_URL}\""; fi
+          } > _quarto-ci.yml
+          cat _quarto-ci.yml
+
+      - name: Render
+        run: quarto render --profile ci
+
+      - name: Check internal links
+        run: Rscript scripts/check-links.R _book
+
+      - name: Upload site artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _book
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

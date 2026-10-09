@@ -1,0 +1,66 @@
+# Capstone Assessment {#sec-capstone .unnumbered}
+
+The capstone is the final assessment of the course. It asks you to show, in one sustained piece of independent work, each competence the course aims to build. It is designed for about 60–80 hours over four to six weeks, and can serve as the final assessment of a doctoral course module. No assessment can guarantee mastery. A capstone that meets the "excellent" level of the rubric is evidence of the ability to carry out and critically evaluate Bayesian computational work independently.
+
+## Components {#sec-capstone-components}
+
+The capstone has three components.
+
+**Component 1: written examination (20%).** A three-hour, closed-book examination in the style of [Checkpoint VII](../checkpoints/checkpoint-7.qmd):
+- derive a posterior distribution from a stated model, including its full conditionals;
+- prove that a stated MCMC kernel leaves the target invariant;
+- explain a stated convergence result and its assumptions;
+- interpret given diagnostic output: trace plots, $\widehat R$, ESS, divergences, rank plots and Pareto $\hat k$.
+
+**Component 2: applied research project (60%).** A complete study following Part B of [Project 7](p7-reproducibility-study.qmd). It must:
+
+1. derive the posterior (up to normalisation) and the full conditionals or gradients for a hierarchical model you choose;
+2. implement and explain at least one MCMC algorithm yourself, and compare it with a reference implementation (e.g. Stan via `cmdstanr`, or the course samplers);
+3. validate the sampler on known targets and by simulation-based calibration;
+4. diagnose convergence with several complementary diagnostics, not just one metric;
+5. report the Monte Carlo standard error of every reported quantity;
+6. fit, check and criticise the hierarchical model, with posterior predictive checks and a sensitivity analysis;
+7. deliver everything as a reproducible repository and technical report.
+
+**Component 3: paper critique (20%).** A written review (about 2500 words) of a published computational-statistics paper, chosen from a list agreed with the instructor or taken from the further-reading sections. Follow the questions in @sec-front-reading, and reproduce one numerical result with your own code.
+
+## Suggested project topics {#sec-capstone-topics}
+
+These are suggestions. Topics from your own research are encouraged if the data can be shared with the assessors.
+
+- A hierarchical model for repeated measurements in your field, comparing centred and non-centred samplers and Stan.
+- A latent Gaussian time-series model (local level or stochastic volatility) with a hand-written FFBS or particle sampler, validated against Stan.
+- A hierarchical logistic regression with a horseshoe or regularised prior, comparing your HMC with NUTS, and studying sensitivity to the global scale.
+- A changepoint or mixture model with multimodal posteriors, using tempering or SMC, and validating against an exact or high-precision reference.
+- A reproduction and extension of one empirical example from a methodological paper cited in Chapters 21–27.
+
+## Rubric {#sec-capstone-rubric}
+
+Each criterion is scored on four levels. Component 2 uses all five criteria with equal weight. Components 1 and 3 use the criteria marked with an asterisk.
+
+| Criterion | Excellent (4) | Proficient (3) | Developing (2) | Insufficient (1) |
+|:--|:--|:--|:--|:--|
+| **Mathematical correctness\*** | Every derivation is complete and correct, assumptions are stated, and the invariance or convergence arguments are rigorous, with the conditions checked. | Derivations are correct with minor gaps; most assumptions are stated. | Some derivations contain errors or unstated assumptions that do not invalidate the main results. | Key derivations are missing or wrong, or results are asserted without justification. |
+| **Statistical interpretation\*** | Conclusions follow from the posterior and are qualified by model checks, sensitivity analyses and limitations; uncertainty is communicated accurately to the intended audience; no causal claims are made without design justification. | Interpretation is sound, with minor overstatement or missing caveats. | Interpretation partly ignores checks or uncertainty, or overstates conclusions. | Conclusions do not follow from the analysis, or uncertainty is misrepresented. |
+| **Software quality** | Code is modular (models separate from samplers), documented, validated at its boundaries, and covered by deterministic and statistical tests with controlled error rates. | Code is organised and tested, with minor gaps in documentation or tests. | Code works but is monolithic or weakly tested. | Code is incomplete, untested or unreadable. |
+| **Computational validation\*** | Samplers are validated on known targets and by SBC; convergence is assessed with multiple complementary diagnostics; every reported quantity has an MCSE; failures are investigated and reported honestly. | Validation and diagnostics are adequate, with minor omissions, e.g. MCSEs missing for some quantities. | Validation is limited, e.g. one diagnostic or no known-target test; MCSEs are largely missing. | No validation; convergence is assumed. |
+| **Reproducibility** | One command rebuilds every result from raw data in a fresh environment; versions, seeds and provenance are recorded; a second person has verified the rebuild. | The project rebuilds with minor manual steps; versions are recorded. | Partial: some results cannot be regenerated, or the environment is undocumented. | Results cannot be reproduced. |
+
+**Grade bands** (Component 2): average score of at least 3.5 is excellent; at least 2.75 proficient; at least 2.0 developing; below 2.0 insufficient. A score of 1 on *any* criterion means the capstone must be revised, whatever the average.
+
+## Academic integrity {#sec-capstone-integrity}
+
+- Cite every source of code, data and ideas, including software packages and the course code. Use the course bibliography style.
+- If you use AI assistants, state where and how in an appendix, and verify every derivation, citation and number yourself. You are responsible for the correctness of the submitted work.
+- Never fabricate data, results or citations. If a planned analysis fails, report the failure: an honest negative result scores higher than a polished but unverifiable one.
+
+## Timeline {#sec-capstone-timeline}
+
+| Week | Milestone |
+|:--|:--|
+| 1 | Question, data with provenance, model and priors (one-page proposal, with feedback) |
+| 2 | Prior predictive checks; sampler implemented and validated on known targets |
+| 3 | SBC; fit to real data; convergence diagnostics |
+| 4 | Posterior predictive checks, sensitivity, model comparison |
+| 5 | Report and repository; peer rebuild of another student's project |
+| 6 | Paper critique; examination |

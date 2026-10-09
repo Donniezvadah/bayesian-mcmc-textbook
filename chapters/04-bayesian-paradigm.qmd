@@ -1,0 +1,445 @@
+# The Bayesian Paradigm {#sec-bayes-paradigm}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. specify a Bayesian model as a joint distribution of data and parameters, and identify its prior, likelihood, posterior, marginal likelihood and prior predictive distribution;
+2. state Bayes' theorem for discrete and continuous parameters with its conditions, and apply it on a grid;
+3. prove that sequential and batch updating give the same posterior when observations are conditionally independent;
+4. explain why the posterior depends on the data only through the likelihood, and what this implies for stopping rules;
+5. contrast the Bayesian and frequentist interpretations of probability and of interval statements, and prove that Bayesian intervals are calibrated on average over the prior;
+6. distinguish subjective, objective (including Jeffreys), weakly informative and informative priors, and derive the Jeffreys prior with its invariance property.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-probability: conditional densities, Bayes' rule for densities (@eq-bayes-densities), change of variables, and the likelihood (@def-likelihood). @sec-math-tools for grid integration.
+:::
+
+## Motivation {#sec-bayes-motivation}
+
+A scientist measuring a reaction rate, an epidemiologist estimating vaccine efficacy and an engineer estimating a failure probability all face the same problem: a quantity of interest is unknown, data bear on it, and the uncertainty that remains must be stated precisely enough to support decisions. The Bayesian approach treats the unknown quantity as a random variable. Uncertainty about it before seeing data is expressed by a probability distribution, and the rules of probability, specifically conditioning, then determine what we should believe after seeing the data. No new principle is needed beyond @sec-probability. The difficulty lies in specifying the model well and in computing the result, which is why most of this book is about computation.
+
+## Definitions and notation {#sec-bayes-definitions}
+
+::: {#def-bayesian-model}
+## Bayesian model
+A **Bayesian model** for data $y$ and parameter $\theta\in\Theta$ is a joint distribution
+$$
+p(y,\theta)=p(y\mid\theta)\,\pi(\theta),
+$$
+specified by a **sampling model** $p(y\mid\theta)$ and a **prior distribution** $\pi(\theta)$. Derived from it are:
+
+- the **prior predictive distribution** (or *marginal distribution of the data*) $p(y)=\int_\Theta p(y\mid\theta)\pi(\theta)\,d\theta$;
+- the **marginal likelihood** (or *evidence*): the prior predictive density evaluated at the observed data;
+- the **posterior distribution** $\pi(\theta\mid y)=p(y\mid\theta)\pi(\theta)/p(y)$;
+- the **posterior predictive distribution** of new data $\tilde y$, $p(\tilde y\mid y)=\int p(\tilde y\mid\theta,y)\,\pi(\theta\mid y)\,d\theta$, which reduces to $\int p(\tilde y\mid\theta)\pi(\theta\mid y)\,d\theta$ when $\tilde y$ and $y$ are conditionally independent given $\theta$.
+:::
+
+The prior and the sampling model together form the model. Both are assumptions, both can be wrong, and both must be checked (@sec-priors, @sec-prediction).
+
+## Mathematical development {#sec-bayes-development}
+
+### Bayes' theorem {#sec-bayes-theorem}
+
+::: {#thm-bayes}
+## Bayes' theorem
+Let $\pi(\theta)$ be a probability density (or mass function) on $\Theta$ and $p(y\mid\theta)$ a sampling density, each with respect to a fixed reference measure. If the observed $y$ satisfies
+$$
+0<p(y)=\int_\Theta p(y\mid u)\,\pi(u)\,du<\infty,
+$$ {#eq-evidence-condition}
+then the conditional density of $\theta$ given $y$ is
+$$
+\pi(\theta\mid y)=\frac{p(y\mid\theta)\,\pi(\theta)}{\int_\Theta p(y\mid u)\,\pi(u)\,du}.
+$$ {#eq-bayes}
+For a discrete parameter, replace the integral by a sum over $\Theta$.
+:::
+
+::: {.proof}
+This is @eq-bayes-densities applied to the joint density $p(y,\theta)=p(y\mid\theta)\pi(\theta)$, whose $y$-marginal is $p(y)$. Condition @eq-evidence-condition makes the division legitimate and ensures that @eq-bayes integrates to one over $\Theta$.
+:::
+
+The four ingredients play distinct roles:
+
+- the **prior** $\pi(\theta)$ encodes information about $\theta$ available before the data;
+- the **likelihood** $L(\theta;y)=p(y\mid\theta)$ encodes how probable the observed data would be under each value of $\theta$. As a function of $\theta$ it is *not* a density (@sec-prob-likelihood);
+- the **marginal likelihood** $p(y)$ is a single number (for fixed data) that normalises the product. It does not depend on $\theta$, so it plays no role in the *shape* of the posterior, but it measures how well the model as a whole predicted the data and is central to model comparison (@sec-model-comparison);
+- the **posterior** $\pi(\theta\mid y)$ combines the two sources of information.
+
+Because $p(y)$ does not depend on $\theta$, the posterior is usually written up to proportionality,
+$$
+\pi(\theta\mid y)\propto p(y\mid\theta)\,\pi(\theta),\qquad\text{"posterior}\propto\text{likelihood}\times\text{prior."}
+$$ {#eq-bayes-proportional}
+Almost all of Bayesian computation consists of extracting information from an unnormalised density $\tilde\pi(\theta)=p(y\mid\theta)\pi(\theta)$ whose normalising constant $p(y)$ cannot be computed. Every MCMC algorithm in this book needs only $\tilde\pi$.
+
+::: {.callout-warning}
+## When @eq-evidence-condition fails
+If $p(y)=0$, the observed data were impossible under the model, which signals a misspecified model or a coding error. If $p(y)=\infty$, which can happen with improper priors (@sec-prior-improper), the "posterior" is not a probability distribution. MCMC algorithms run without complaint on improper posteriors and produce meaningless output, so **propriety must be established mathematically, not inferred from sampler output** [@hobert1996effect].
+:::
+
+### Bayes' theorem for a discrete parameter {#sec-bayes-discrete}
+
+::: {#exm-diagnostic-test}
+## A diagnostic test
+A disease has prevalence $1\%$. A test has sensitivity $\mathbb P(+\mid D)=0.95$ and specificity $\mathbb P(-\mid\bar D)=0.90$. The parameter is disease status $\theta\in\{D,\bar D\}$ with prior $(0.01,0.99)$; the datum is a positive test. Then
+$$
+\mathbb P(D\mid+)=\frac{0.95\times0.01}{0.95\times0.01+0.10\times0.99}=\frac{0.0095}{0.1085}\approx0.088.
+$$
+Fewer than one in ten positives has the disease. The likelihood ratio $\mathbb P(+\mid D)/\mathbb P(+\mid\bar D)=9.5$ is strong evidence, but it multiplies prior odds of $1:99$, giving posterior odds of $9.5:99$. Ignoring the prior here (the *base-rate fallacy*) is a serious and common error.
+:::
+
+The example shows the **odds form** of Bayes' theorem, which holds for any two parameter values (or hypotheses) $\theta_1,\theta_2$:
+$$
+\frac{\pi(\theta_1\mid y)}{\pi(\theta_2\mid y)}=\frac{p(y\mid\theta_1)}{p(y\mid\theta_2)}\times\frac{\pi(\theta_1)}{\pi(\theta_2)}:
+\qquad\text{posterior odds}=\text{likelihood ratio}\times\text{prior odds}.
+$$ {#eq-odds-form}
+The normalising constant cancels, just as it does in the Metropolis–Hastings acceptance ratio (@sec-mh).
+
+### Updating, one observation at a time {#sec-bayes-sequential}
+
+::: {#prp-sequential-updating}
+## Sequential and batch updating agree
+Let $y_1$ and $y_2$ be conditionally independent given $\theta$. Updating the prior with $y_1$, and then using the resulting posterior as the prior for $y_2$, gives the same distribution as updating the prior with $(y_1,y_2)$ at once.
+:::
+
+::: {.proof}
+After $y_1$, the "prior" for the second update is $\pi(\theta\mid y_1)\propto p(y_1\mid\theta)\pi(\theta)$. Updating it with $y_2$, using the sampling model $p(y_2\mid\theta,y_1)=p(y_2\mid\theta)$ (conditional independence), gives
+$\pi(\theta\mid y_1,y_2)\propto p(y_2\mid\theta)\,p(y_1\mid\theta)\,\pi(\theta)=p(y_1,y_2\mid\theta)\pi(\theta)$, the batch posterior. Both are normalised densities proportional to the same function, so they are equal.
+:::
+
+Without conditional independence the second update must use $p(y_2\mid\theta,y_1)$, as in time-series models (@sec-time-series). The proposition says that "today's posterior is tomorrow's prior", and that the order in which exchangeable data arrive does not matter.
+
+### The posterior depends on the data only through the likelihood {#sec-bayes-likelihood-principle}
+
+By @eq-bayes-proportional, two experiments whose likelihoods for the observed data are proportional, $L_1(\theta;y_1)=c\,L_2(\theta;y_2)$ with $c$ free of $\theta$, yield the same posterior from the same prior. This is one direction of the **likelihood principle** [@berger1985decision, Section 1.6; @robert2007choice, Section 1.3]. Many frequentist procedures violate it, because they depend on data that could have been observed but were not.
+
+::: {#exm-stopping-rule}
+## Stopping rules
+An experimenter reports 9 successes and 3 failures in Bernoulli trials with success probability $\theta$. If $n=12$ was fixed in advance, the likelihood is binomial, $\binom{12}{9}\theta^9(1-\theta)^3$. If the experimenter instead sampled until the third failure, it is negative binomial, $\binom{11}{9}\theta^9(1-\theta)^3$. Both are proportional to $\theta^9(1-\theta)^3$, so the posteriors are identical. The one-sided p-values for $H_0:\theta=1/2$ against $\theta>1/2$, however, are $\mathbb P(Y\ge9)\approx0.073$ under the binomial design and $\approx0.033$ under the negative-binomial design (@exr-bayes-4), which fall on opposite sides of the conventional 0.05 threshold.
+:::
+
+Whether this is a virtue is debated. The Bayesian answer is that the experimenter's intentions about unobserved data should not change what the observed data say about $\theta$. The frequentist answer is that a procedure's error rates depend on the design, and a Bayesian analysis whose priors ignore the design can have poor long-run properties [@bayarri2004interplay].
+
+### Bayesian and frequentist interpretations {#sec-bayes-interpretations}
+
+The two schools disagree about what probability *is*, and hence about what is random.
+
+| | Frequentist | Bayesian |
+|:--|:--|:--|
+| Probability means | long-run relative frequency in repetitions | a coherent degree of belief (or a consistent measure of uncertainty) |
+| Parameter $\theta$ | fixed and unknown | random, with a prior distribution |
+| Data $y$ | random, before and after observation | random before observation, conditioned on after |
+| Interval statement | a procedure covers the true $\theta$ in 95% of repetitions | $\mathbb P(\theta\in C\mid y)=0.95$ for the observed data |
+| Main tool | sampling distribution of estimators | posterior distribution |
+
+The two are not as opposed in practice as the table suggests. Two connections matter for this book.
+
+**Calibration on average.** Bayesian probability statements have a precise frequency interpretation when the data are generated from the model itself, including the prior.
+
+::: {#prp-prior-coverage}
+## Bayesian intervals are calibrated over the prior
+Suppose $\theta\sim\pi$ and $y\mid\theta\sim p(y\mid\theta)$, and for each $y$ let $C(y)$ be a set with posterior probability $\mathbb P(\theta\in C(y)\mid y)=1-\alpha$. Then, under the joint distribution of $(\theta,y)$,
+$$
+\mathbb P\big(\theta\in C(y)\big)=1-\alpha.
+$$
+:::
+
+::: {.proof}
+By @thm-tower, $\mathbb P(\theta\in C(y))=\mathbb E\big[\mathbb P(\theta\in C(y)\mid y)\big]=\mathbb E[1-\alpha]=1-\alpha$.
+:::
+
+The proposition is exact, with no asymptotics. It concerns coverage *averaged over parameter values drawn from the prior*. At a fixed $\theta$ the coverage can be higher or lower, and the experiment below shows this. Simulation-based calibration (@sec-validation) uses @prp-prior-coverage, generalised to ranks, to test whether posterior *computations* are correct.
+
+**Agreement in large samples.** Under regularity conditions, including a fixed finite-dimensional parameter, a correctly specified model and a prior with positive continuous density at the true value $\theta_0$, the posterior is asymptotically $\mathrm N(\hat\theta,I(\theta_0)^{-1}/n)$, where $\hat\theta$ is an efficient estimator such as the MLE and $I$ is the Fisher information. This is the **Bernstein–von Mises theorem** [@vandervaart1998asymptotic, Theorem 10.1]. Consequently, Bayesian credible intervals are asymptotically frequentist confidence intervals and the prior's influence vanishes. The conditions matter: they fail for high-dimensional or non-parametric models, at boundaries of the parameter space, and under misspecification, where the posterior concentrates on the best-approximating parameter but its spread need not match the sampling variability [@kleijn2012bernstein].
+
+### Kinds of prior {#sec-bayes-prior-types}
+
+The prior is the most criticised part of a Bayesian analysis, and it is easier to discuss once its roles are separated.
+
+- **Subjective (personal) priors** express an individual's actual beliefs, elicited carefully (@sec-priors) [@ohagan2006uncertain]. They are coherent by construction, but different analysts may disagree.
+- **Informative priors** encode substantive external information, such as results of previous studies, physical constraints or expert knowledge. They are essential when data are scarce, and they must be documented and defended.
+- **Objective (default) priors** are derived from formal rules meant to represent "minimal information", such as Jeffreys priors and reference priors [@jeffreys1946invariant; @bernardo1979reference; @kass1996selection]. No prior is literally non-informative: each rule embodies choices. Many are improper.
+- **Weakly informative priors** deliberately contain *less* information than is actually available, while ruling out absurd parameter values. Examples are a $\mathrm N(0,2.5^2)$ prior on a logistic regression coefficient for a standardised predictor [@gelman2008weakly] and a half-normal prior on a hierarchical scale. They regularise estimates and stabilise computation without dominating the data.
+
+**The Jeffreys prior.** For a regular one-parameter model with Fisher information $I(\theta)=-\mathbb E\big[\partial^2\log p(Y\mid\theta)/\partial\theta^2\big]$, the Jeffreys prior is $\pi_J(\theta)\propto\sqrt{I(\theta)}$. Its defining property is invariance under reparameterisation.
+
+::: {#prp-jeffreys-invariance}
+## Invariance of the Jeffreys prior
+Let $\phi=h(\theta)$ with $h$ a smooth bijection. Deriving the Jeffreys prior in the $\phi$-parameterisation gives the same distribution as transforming $\pi_J(\theta)$ by the change-of-variables formula.
+:::
+
+::: {.proof}
+By the chain rule, the score in $\phi$ is $\partial_\phi\log p=\partial_\theta\log p\cdot d\theta/d\phi$, so $I_\phi(\phi)=\mathbb E[(\partial_\phi\log p)^2]=I_\theta(\theta)\,(d\theta/d\phi)^2$, using the identity $I=\mathbb E[(\text{score})^2]$, valid under the usual regularity conditions. Hence $\sqrt{I_\phi(\phi)}=\sqrt{I_\theta(\theta)}\,\lvert d\theta/d\phi\rvert$, which is exactly @eq-change-of-variables applied to $\pi_J(\theta)$.
+:::
+
+For $y\sim\mathrm{Bin}(n,\theta)$, $I(\theta)=n/\{\theta(1-\theta)\}$, so $\pi_J(\theta)\propto\theta^{-1/2}(1-\theta)^{-1/2}$, the $\mathrm{Beta}(\frac12,\frac12)$ distribution. By contrast, the uniform prior on $\theta$ is *not* uniform on $\operatorname{logit}\theta$ (@exr-math-5): "uniform" is not a parameterisation-free notion of ignorance, and this is the problem Jeffreys' rule addresses.
+
+## Worked example: estimating a proportion on a grid {#sec-bayes-worked}
+
+A survey finds that $y=12$ of $n=50$ randomly sampled households have a particular water-quality problem. We estimate the population proportion $\theta$ under two priors: the uniform $\mathrm{Beta}(1,1)$, and an informative prior from a previous survey that suggests $\theta$ is around 0.10 with a standard deviation of about 0.05, encoded as $\mathrm{Beta}(3.5,31.5)$ (mean 0.10, standard deviation 0.050).
+
+**Step 1: Bayes' theorem on a grid.** With @eq-bayes, discretise $\Theta=(0,1)$ into a fine grid, multiply the likelihood by the prior pointwise, and normalise numerically:
+
+```{r}
+#| label: bayes-grid
+y <- 12; n <- 50
+theta <- seq(0.0005, 0.9995, by = 0.001)              # grid of 1000 points
+log_lik <- dbinom(y, n, theta, log = TRUE)
+priors <- list(uniform = c(1, 1), informative = c(3.5, 31.5))
+post <- lapply(priors, function(ab) {
+  lp <- log_lik + dbeta(theta, ab[1], ab[2], log = TRUE)
+  w <- normalise_log_weights(lp)                       # posterior mass at each grid point
+  c(mean = sum(w * theta), sd = sqrt(sum(w * theta^2) - sum(w * theta)^2),
+    q2.5 = theta[which(cumsum(w) >= 0.025)[1]], q97.5 = theta[which(cumsum(w) >= 0.975)[1]],
+    log_evidence = log_sum_exp(log_lik + dbeta(theta, ab[1], ab[2], log = TRUE)) + log(0.001))
+})
+round(do.call(rbind, post), 4)
+```
+
+**Step 2: check against the exact answer.** The Beta prior is conjugate to the binomial likelihood (@sec-conjugate): the posterior is $\mathrm{Beta}(a+y,b+n-y)$. A grid computation that disagrees with this exact result signals an error.
+
+```{r}
+#| label: bayes-grid-check
+exact <- sapply(priors, function(ab) {
+  a <- ab[1] + y; b <- ab[2] + n - y
+  c(mean = a / (a + b), sd = sqrt(a * b / ((a + b)^2 * (a + b + 1))),
+    q2.5 = qbeta(0.025, a, b), q97.5 = qbeta(0.975, a, b),
+    log_evidence = dbetabinom_log(y, n, ab[1], ab[2]))
+})
+round(t(exact), 4)
+```
+
+The grid reproduces means and standard deviations to four decimals, and quantiles to the grid spacing. The log evidence $\log p(y)$, which is the beta-binomial probability of the data (@exr-prob-6), is also reproduced.
+
+**Step 3: interpret.** Under the uniform prior the posterior mean is $13/52=0.25$, close to the sample proportion $0.24$. The informative prior pulls the estimate towards $0.10$, giving a posterior mean of about $0.18$. The data and prior disagree: the sample proportion lies far in the prior's upper tail. The marginal likelihood is accordingly lower under the informative prior, because that model predicted 12 households to be unlikely. Whether to trust the old survey or the new one is a substantive question that no formula answers. The analysis makes the conflict visible, and @sec-prior-conflict shows how to detect it systematically.
+
+```{r}
+#| label: fig-bayes-prior-posterior
+#| fig-cap: "Prior (dashed), scaled likelihood (dotted) and posterior (solid) for the survey example under a uniform prior (left) and an informative prior (right). The posterior is a compromise between likelihood and prior, weighted by their information."
+#| fig-height: 3.4
+par(mfrow = c(1, 2))
+for (nm in names(priors)) {
+  ab <- priors[[nm]]
+  lik <- exp(log_lik - max(log_lik)); lik <- lik / sum(lik * 0.001)
+  pd <- dbeta(theta, ab[1] + y, ab[2] + n - y)
+  plot(theta, pd, type = "l", lwd = 2, col = course_cols[["blue"]], xlim = c(0, 0.6),
+       ylim = c(0, max(pd, lik, dbeta(theta, ab[1], ab[2])[theta > 0.01])), main = nm,
+       xlab = expression(theta), ylab = "density")
+  lines(theta, dbeta(theta, ab[1], ab[2]), lty = 2, col = course_cols[["orange"]], lwd = 1.5)
+  lines(theta, lik, lty = 3, col = course_muted, lwd = 1.5)
+}
+legend("topright", c("posterior", "prior", "likelihood"), lty = c(1, 2, 3), bty = "n", cex = 0.8,
+       col = c(course_cols[["blue"]], course_cols[["orange"]], course_muted))
+```
+
+## R implementation {#sec-bayes-r}
+
+The grid method generalises to any one- or two-parameter model whose log likelihood and log prior can be evaluated. A compact, reusable version:
+
+```{r}
+#| label: bayes-grid-function
+#' Posterior summaries on a 1-D grid (equally spaced).
+#' @param log_lik, log_prior vectorised functions of theta.
+grid_bayes <- function(log_lik, log_prior, grid) {
+  stopifnot(is.function(log_lik), is.function(log_prior), length(grid) >= 3,
+            all(diff(grid) > 0), max(abs(diff(diff(grid)))) < 1e-8 * max(1, abs(grid)))
+  lp <- log_lik(grid) + log_prior(grid)
+  if (!any(is.finite(lp))) stop("Unnormalised posterior is zero on the whole grid.")
+  w <- normalise_log_weights(lp)
+  h <- diff(grid[1:2])
+  m <- sum(w * grid)
+  # A large boundary weight means the grid truncates the posterior.
+  if (max(w[c(1, length(w))]) > 1e-6 * max(w)) warning("Posterior mass near the grid boundary: widen the grid.")
+  list(grid = grid, density = w / h, mean = m, sd = sqrt(sum(w * (grid - m)^2)),
+       quantile = function(p) grid[vapply(p, function(pp) which(cumsum(w) >= pp)[1], 1L)],
+       log_evidence = log_sum_exp(lp) + log(h))
+}
+fit <- grid_bayes(function(t) dbinom(y, n, t, log = TRUE), function(t) dbeta(t, 3.5, 31.5, log = TRUE),
+                  seq(0.0005, 0.9995, by = 0.001))
+c(mean = fit$mean, sd = fit$sd, fit$quantile(c(0.025, 0.975)))
+```
+
+The function checks its inputs, works on the log scale, warns when the grid may truncate the posterior, and returns a quantile *function* (a closure) rather than fixed quantiles.
+
+## Computational experiment: updating, washing out, and calibration {#sec-bayes-experiment}
+
+**Sequential updating and the influence of the prior.** We simulate Bernoulli data with true $\theta_0=0.3$ and track the posterior under two very different priors as $n$ grows. By @prp-sequential-updating, the posterior after $n$ observations can be computed from the running count of successes.
+
+```{r}
+#| label: fig-bayes-washout
+#| fig-cap: "Posterior means and 95% intervals (bands) under a uniform prior (blue) and a sceptical $\\mathrm{Beta}(2,20)$ prior (orange) as the number of Bernoulli observations grows; true $\\theta_0=0.3$ (dashed). The prior's influence fades at rate $1/n$."
+#| fig-height: 3.6
+set.seed(401)
+x <- rbinom(1000, 1, 0.3)
+ns <- unique(round(10^seq(0, 3, length.out = 60)))
+summ <- function(a, b) t(sapply(ns, function(k) {
+  s <- sum(x[1:k]); c(mean = (a + s) / (a + b + k), lo = qbeta(0.025, a + s, b + k - s),
+                      hi = qbeta(0.975, a + s, b + k - s)) }))
+u <- summ(1, 1); sc <- summ(2, 20)
+plot(ns, u[, "mean"], log = "x", type = "n", ylim = c(0, 0.8), xlab = "number of observations n",
+     ylab = expression(theta))
+polygon(c(ns, rev(ns)), c(u[, "lo"], rev(u[, "hi"])), col = alpha_col(course_cols[["blue"]], 0.2), border = NA)
+polygon(c(ns, rev(ns)), c(sc[, "lo"], rev(sc[, "hi"])), col = alpha_col(course_cols[["orange"]], 0.2), border = NA)
+lines(ns, u[, "mean"], col = course_cols[["blue"]], lwd = 2)
+lines(ns, sc[, "mean"], col = course_cols[["orange"]], lwd = 2)
+abline(h = 0.3, lty = 2, col = course_ink)
+legend("topright", c("uniform prior", "Beta(2, 20) prior"), col = course_cols[c("blue", "orange")],
+       lwd = 2, bty = "n", cex = 0.85)
+```
+
+**Calibration over the prior versus at a fixed parameter.** We check @prp-prior-coverage by simulation. We draw $\theta$ from a $\mathrm{Beta}(2,8)$ prior, then $y\sim\mathrm{Bin}(20,\theta)$, and record whether the central 90% posterior interval contains $\theta$. We then fix $\theta$ at several values and repeat.
+
+```{r}
+#| label: bayes-coverage
+set.seed(402)
+a0 <- 2; b0 <- 8; nn <- 20; R <- 20000
+covers <- function(th) {
+  yy <- rbinom(length(th), nn, th)
+  lo <- qbeta(0.05, a0 + yy, b0 + nn - yy); hi <- qbeta(0.95, a0 + yy, b0 + nn - yy)
+  th >= lo & th <= hi
+}
+cov_prior <- mean(covers(rbeta(R, a0, b0)))
+cov_fixed <- sapply(c(0.05, 0.2, 0.5, 0.8), function(t) mean(covers(rep(t, R))))
+round(c(over_prior = cov_prior, mcse = sqrt(0.09 / R),
+        setNames(cov_fixed, paste0("theta=", c(0.05, 0.2, 0.5, 0.8)))), 3)
+```
+
+Averaged over the prior, coverage is $0.90$ within Monte Carlo error, as @prp-prior-coverage guarantees. At $\theta=0.8$, a value the $\mathrm{Beta}(2,8)$ prior considers implausible, coverage collapses, because the prior pulls the intervals towards small values. At values well supported by the prior, coverage exceeds 0.90. This is the honest summary of the Bayesian–frequentist relationship. Bayesian intervals are exactly calibrated with respect to the prior they assume, and their frequentist properties at a particular $\theta$ depend on how well the prior describes reality.
+
+## Diagnostics and validation {#sec-bayes-validation}
+
+- **Check propriety.** Verify @eq-evidence-condition analytically. For a proper prior and a bounded likelihood, $p(y)\le\sup_\theta L(\theta;y)<\infty$ holds automatically.
+- **Check computation against exact results.** When a conjugate special case exists, compare (Step 2 above). Grid computations should be refined until answers stop changing, and should not put mass at the grid boundary.
+- **Check calibration by simulation.** Simulating $\theta$ from the prior and $y$ from the model and recording interval coverage, as in the experiment, tests the whole pipeline of model specification, coding and computation. Coverage significantly different from nominal, *averaged over the prior*, indicates a bug. Simulation-based calibration (@sec-validation) sharpens this idea.
+- **Check sensitivity.** Repeat the analysis under alternative reasonable priors and report how much conclusions change (@sec-priors).
+
+## Interpretation {#sec-bayes-interpretation}
+
+A posterior distribution is a complete description of uncertainty about $\theta$ *given the model and the data*. Every summary (means, intervals, probabilities of hypotheses, predictions) is a functional of it. Its correctness is conditional: if the prior is unreasonable or the sampling model wrong, the posterior is a precise answer to the wrong question. The interpretation of a 95% credible interval, "given the model and data, $\theta$ lies in this interval with probability 0.95", is direct. It is also only as credible as the model.
+
+## Limitations and common errors {#sec-bayes-errors}
+
+- **Base-rate neglect.** Reporting the likelihood ratio, or $\mathbb P(\text{data}\mid\text{hypothesis})$, as if it were the posterior probability (@exm-diagnostic-test).
+- **Treating "non-informative" as "objective truth".** Flat priors are informative on other scales and can be improper. Results under default priors still depend on choices.
+- **Assuming posterior propriety.** Improper priors can give improper posteriors, and samplers will not warn you.
+- **Over-interpreting the marginal likelihood.** It depends strongly on the prior, even when the posterior does not (@sec-model-comparison).
+- **Forgetting that the model may be wrong.** Bayes' theorem guarantees coherence, not correctness. Posterior predictive checks (@sec-prediction) test the model against the data.
+- **Confusing the Bayesian and frequentist interpretations of an interval.** A 95% confidence interval does not contain $\theta$ with probability 0.95 given the data, and a 95% credible interval need not cover the true $\theta$ in 95% of repetitions at that $\theta$.
+
+## Chapter summary {#sec-bayes-summary}
+
+- A Bayesian model is a joint distribution $p(y\mid\theta)\pi(\theta)$. The posterior is its conditional distribution given the observed data (@thm-bayes), which exists when $0<p(y)<\infty$.
+- The posterior is proportional to likelihood times prior. The marginal likelihood $p(y)$ normalises it and measures the model's predictive success.
+- Updating is coherent: sequential and batch updating agree for conditionally independent data (@prp-sequential-updating), and data enter only through the likelihood.
+- Bayesian intervals are exactly calibrated on average over the prior (@prp-prior-coverage). Their coverage at a fixed parameter depends on the prior, and in regular models it approaches the nominal level as $n$ grows (Bernstein–von Mises).
+- Priors may be subjective, informative, objective or weakly informative. The Jeffreys prior is invariant under reparameterisation (@prp-jeffreys-invariance), and "uniform" is not.
+
+## Exercises {#sec-bayes-exercises}
+
+::: {#exr-bayes-1}
+**[Mathematical ★]** In @exm-diagnostic-test, a second, conditionally independent test with the same characteristics is also positive. Compute $\mathbb P(D\mid+,+)$ both directly and by sequential updating.
+:::
+
+::: {#exr-bayes-2}
+**[Conceptual ★]** Explain in two or three sentences each: (a) why the marginal likelihood does not affect the shape of the posterior; (b) why it nevertheless matters; (c) why it can be infinite even when every posterior quantity looks finite in a simulation.
+:::
+
+::: {#exr-bayes-3}
+**[Proof ★★]** Show that if the prior is proper and the likelihood is bounded in $\theta$ for the observed $y$, then $p(y)<\infty$. Give an example of a proper prior and an unbounded likelihood for which $p(y)$ is still finite, and one for which it is infinite.
+:::
+
+::: {#exr-bayes-4}
+**[R ★]** Verify the two p-values in @exm-stopping-rule with `pbinom()` and `pnbinom()`, and verify by computation that the two likelihoods are proportional. Then compute the posterior probability $\mathbb P(\theta>1/2\mid y)$ under a uniform prior.
+:::
+
+::: {#exr-bayes-5}
+**[Mathematical ★★]** Derive the Jeffreys prior for (a) the Poisson mean $\lambda$, (b) the exponential rate $\lambda$, and (c) the normal mean $\mu$ with known variance. Which are proper? Are the resulting posteriors proper after one observation?
+:::
+
+::: {#exr-bayes-6}
+**[Simulation ★★]** Repeat the coverage experiment with the Jeffreys prior $\mathrm{Beta}(1/2,1/2)$ in place of $\mathrm{Beta}(2,8)$, recording the frequentist coverage of 90% intervals at $\theta\in\{0.01,0.05,0.2,0.5\}$ for $n=20$. Compare with the Wald interval $\hat\theta\pm1.645\sqrt{\hat\theta(1-\hat\theta)/n}$.
+:::
+
+::: {#exr-bayes-7}
+**[Critique ★★]** A report states: "Using a non-informative prior, the posterior probability that the new treatment is better is 0.97; therefore there is a 97% chance that the treatment works." Identify at least three issues with this statement.
+:::
+
+::: {#exr-bayes-8}
+**[Mathematical ★★]** Let $y_1,\dots,y_n\mid\theta\stackrel{\text{iid}}\sim\mathrm N(\theta,1)$ with prior $\theta\sim\mathrm N(0,\tau^2)$. Compute the posterior and the marginal likelihood $p(y)$. Show that as $\tau\to\infty$ the posterior converges to $\mathrm N(\bar y,1/n)$ while $p(y)\to0$. What does this imply about using vague priors for model comparison?
+:::
+
+::: {#exr-bayes-9}
+**[Research ★★★]** The Bernstein–von Mises theorem can fail. Construct a simple example, for instance a parameter on $[0,\infty)$ whose true value is $\theta_0=0$, and show by simulation that the posterior is not asymptotically normal and that the coverage of central credible intervals does not approach the nominal level. Relate your findings to the conditions of the theorem in @vandervaart1998asymptotic.
+:::
+
+## Further reading {#sec-bayes-reading}
+
+- @gelman2013bda, Chapters 1–2, and @hoff2009first, Chapters 1–3: Bayesian inference for single-parameter models.
+- @robert2007choice and @bernardo1994theory: foundations, including decision-theoretic justifications and the likelihood principle.
+- @berger1985decision: the likelihood principle, stopping rules and the frequentist–Bayesian relationship.
+- @jeffreys1946invariant, @bernardo1979reference and @kass1996selection: formal rules for constructing priors.
+- @bayarri2004interplay, @little2006calibrated and @gelman2013philosophy: how Bayesian and frequentist reasoning interact in practice.
+- @vandervaart1998asymptotic, Chapter 10: the Bernstein–von Mises theorem, and @kleijn2012bernstein for its behaviour under misspecification.
+
+## Solutions {#sec-bayes-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-bayes-1
+Directly: $\mathbb P(D\mid+,+)=\frac{0.95^2\times0.01}{0.95^2\times0.01+0.10^2\times0.99}=\frac{0.009025}{0.009025+0.0099}\approx0.477$. Sequentially: the posterior after the first test, $0.0876$, becomes the prior: $\frac{0.95\times0.0876}{0.95\times0.0876+0.10\times0.9124}\approx0.477$. They agree, as @prp-sequential-updating requires.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-bayes-2
+(a) $p(y)$ is a constant in $\theta$; dividing by it rescales the density without changing its shape. (b) It is the probability (density) the model assigned to the observed data before seeing them. Ratios of marginal likelihoods (Bayes factors) compare models, and $p(y)$ is needed to report normalised posterior densities. (c) With an improper prior, $p(y)$ can be infinite: the posterior is then improper. A sampler may still produce finite-looking output, because it never visits the regions where the infinite mass lies within any finite run.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-bayes-3
+If $L(\theta;y)\le B$ then $p(y)=\int L\pi\le B\int\pi=B$. Finite example with an unbounded likelihood: $y\mid\sigma\sim\mathrm N(0,\sigma^2)$ with observed $y=0$ has $L(\sigma)=1/(\sigma\sqrt{2\pi})$, unbounded as $\sigma\to0$; with prior $\sigma\sim\mathrm{Gamma}(2,1)$, $p(y)=\int_0^\infty\frac{1}{\sigma\sqrt{2\pi}}\sigma e^{-\sigma}d\sigma=1/\sqrt{2\pi}<\infty$. Infinite example: the same likelihood with prior $\sigma\sim\mathrm{Exp}(1)$ gives $\int_0^\infty\frac{e^{-\sigma}}{\sigma\sqrt{2\pi}}d\sigma=\infty$ (divergence at 0). (Observing exactly $y=0$ has probability zero, but rounding can produce it, and the same divergence occurs for a normal mixture likelihood when one component collapses onto a data point.)
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-bayes-4
+```{r}
+#| eval: false
+pbinom(8, 12, 0.5, lower.tail = FALSE)          # P(Y >= 9 | n = 12) = 0.0730
+pnbinom(8, size = 3, prob = 0.5, lower.tail = FALSE)   # failures-before-3rd-success form
+th <- seq(0.01, 0.99, by = 0.01)
+range(dbinom(9, 12, th) / dnbinom(9, size = 3, prob = 1 - th))   # constant ratio 220/55 = 4
+pbeta(0.5, 10, 4, lower.tail = FALSE)            # P(theta > 1/2 | y) = 0.954
+```
+In `dnbinom()`, `size = 3` counts *failures* when `prob = 1 - th` is the failure probability, and the random variable is the number of successes before the third failure, so $\mathbb P(Y\ge9)=$ `pnbinom(8, 3, 0.5, lower.tail = FALSE)` $\approx0.0327$. The likelihood ratio is $\binom{12}{9}/\binom{11}{9}=220/55=4$ for every $\theta$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-bayes-5
+(a) Poisson: $I(\lambda)=1/\lambda$, $\pi_J\propto\lambda^{-1/2}$, improper; after observing $y$ the posterior is $\mathrm{Gamma}(y+\frac12,1)$, proper for every $y\ge0$. (b) Exponential: $I(\lambda)=1/\lambda^2$, $\pi_J\propto1/\lambda$, improper; after one observation $y>0$ the posterior $\propto e^{-\lambda y}$ is $\mathrm{Exp}(y)$, proper. (c) Normal mean: $I(\mu)=1/\sigma^2$, constant, so $\pi_J\propto1$, improper; the posterior after one observation is $\mathrm N(y,\sigma^2)$, proper.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-bayes-6
+Use `covers()` from the experiment with `a0 <- 0.5; b0 <- 0.5`. Jeffreys intervals have frequentist coverage close to 0.90 for $\theta$ away from 0 and 1. Near the boundary it oscillates and can dip below nominal because of discreteness, but it is far better than the Wald interval, whose coverage at $\theta=0.01$ is very poor: with probability $0.99^{20}\approx0.82$ we observe $y=0$, the Wald interval degenerates to $\{0\}$, and it misses $\theta$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-bayes-7
+(i) "Non-informative" priors are not free of information and may matter in small samples; the analysis should state the prior and show sensitivity. (ii) "Better" must be defined (by how much? on which outcome?): $\mathbb P(\delta>0\mid y)=0.97$ says nothing about whether the effect is large enough to matter. (iii) The statement is conditional on the model; model checks are needed. (iv) "The treatment works" for an individual patient is a different, predictive question from a population-average effect. (v) If several outcomes or subgroups were examined and only this one reported, the posterior given *all* the data may differ.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-bayes-8
+The posterior is $\mathrm N\big(\frac{n\bar y}{n+\tau^{-2}},\frac{1}{n+\tau^{-2}}\big)\to\mathrm N(\bar y,1/n)$. Marginally $y\sim\mathrm N_n(0,I+\tau^2\mathbf 1\mathbf 1^\top)$, so $p(y)=(2\pi)^{-n/2}(1+n\tau^2)^{-1/2}\exp\{-\tfrac12[\sum(y_i-\bar y)^2+\frac{n\bar y^2}{1+n\tau^2}]\}$, which tends to 0 like $\tau^{-1}$. A vague prior barely affects the posterior but drives the evidence to zero, so marginal likelihoods (and Bayes factors) under vague priors are arbitrary. This is the root of Lindley's paradox (@sec-decision, @sec-model-comparison).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-bayes-9
+Take $y_i\mid\theta\sim\mathrm N(\theta,1)$ with $\theta\ge0$, prior $\pi(\theta)=\mathrm{Exp}(1)$, and true $\theta_0=0$. The posterior is a normal distribution truncated to $[0,\infty)$, with location $\bar y-1/n$ and scale $n^{-1/2}$. Since $\sqrt n\bar y\sim\mathrm N(0,1)$, the rescaled posterior $\sqrt n(\theta-\bar y)$ is a *random truncated* normal: in about half of the data sets most of its mass lies against the boundary. It does not converge to a fixed Gaussian, and central 90% credible intervals never contain 0, the true value, so their coverage is 0. The theorem requires $\theta_0$ to be an interior point of $\Theta$, which fails here. Highest-density intervals (@sec-decision) behave better at the boundary.
+:::

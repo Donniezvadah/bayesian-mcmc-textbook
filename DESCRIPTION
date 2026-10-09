@@ -1,0 +1,28 @@
+Package: bayesmcmcbook
+Title: Course Code and Book for 'Bayesian Statistics and Markov Chain Monte Carlo'
+Version: 0.1.0
+Authors@R: person("Donnie", role = c("aut", "cre"))
+Description: Dependency declaration for building the Quarto book "Bayesian
+    Statistics and Markov Chain Monte Carlo: From Foundations to Advanced
+    Computational Inference" and running its test suite. This file is used by
+    remotes::install_deps() and by continuous integration; the repository is a
+    book project, not an installable package.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends: R (>= 4.3)
+Imports:
+    knitr,
+    rmarkdown,
+    posterior,
+    coda,
+    loo,
+    ggplot2,
+    MASS,
+    boot,
+    testthat (>= 3.0.0)
+Suggests:
+    jsonlite,
+    bayesplot,
+    cmdstanr
+Additional_repositories: https://stan-dev.r-universe.dev
+Config/testthat/edition: 3

@@ -1,0 +1,334 @@
+# Why MCMC Works {#sec-why-mcmc}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. explain why sampling from a posterior known only up to a constant is hard, and how a Markov chain sidesteps the difficulty;
+2. prove that kernels built from ratios of the unnormalised target leave the target invariant, and that mixtures and compositions of invariant kernels are invariant;
+3. quantify the bias that initialisation introduces into MCMC averages, and decide when discarding a warm-up period helps;
+4. state the Markov chain central limit theorem and derive the Monte Carlo standard error under dependence;
+5. prove that no diagnostic computed from a finite run can certify convergence, and recognise metastability in practice.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-markov-chains (invariance, detailed balance, convergence, variance of ergodic averages), @sec-monte-carlo (MCSE), @sec-r-rejection (why independent sampling fails in high dimensions).
+:::
+
+## Motivation {#sec-why-motivation}
+
+We want expectations under a posterior $\pi(\theta\mid y)=\tilde\pi(\theta)/Z$ where $\tilde\pi(\theta)=p(y\mid\theta)\pi(\theta)$ can be evaluated pointwise but $Z=p(y)$ cannot. Independent sampling methods (inverse transforms, rejection sampling) need either the normalised distribution function or an envelope that covers $\tilde\pi$ everywhere, and in high dimensions such envelopes are exponentially inefficient. The idea behind MCMC, due to @metropolis1953equation and generalised by @hastings1970, is to give up independence: construct a Markov chain whose transitions use only *ratios* $\tilde\pi(\theta')/\tilde\pi(\theta)$, in which $Z$ cancels, and whose invariant distribution is $\pi$. By @sec-markov-chains, its averages then converge to posterior expectations. This chapter explains why that works, and also where it can fail, because a guarantee in the limit $N\to\infty$ is not a guarantee about a finite run.
+
+## Definitions and notation {#sec-why-definitions}
+
+Throughout, $\pi$ is a target density on $\mathsf X\subseteq\mathbb R^d$ known up to the constant $Z$, and $P$ is a Markov kernel.
+
+::: {#def-mcmc-algorithm}
+## MCMC algorithm
+An **MCMC algorithm** for $\pi$ is a Markov kernel $P$ with $\pi P=\pi$, together with an initial distribution $\mu_0$ (often a point mass) and a run length. Its output $\theta_0,\theta_1,\dots,\theta_N$ is used to estimate $\pi(f)$ by $\hat\mu_N=\frac1{N-B}\sum_{t=B+1}^Nf(\theta_t)$, where the first $B$ iterations are discarded as **warm-up** (also called **burn-in**).
+:::
+
+Two kinds of kernel recur. A **Metropolis–Hastings kernel** proposes $\theta'\sim q(\cdot\mid\theta)$ and accepts it with a probability depending on $\tilde\pi(\theta')/\tilde\pi(\theta)$ (@sec-mh). A **Gibbs kernel** replaces one block of $\theta$ by a draw from its full conditional distribution given the rest (@sec-gibbs).
+
+## Mathematical development {#sec-why-development}
+
+### Building kernels with a prescribed invariant distribution {#sec-why-building}
+
+Detailed balance (@prp-db-invariance) involves $\pi$ only through ratios. Writing it for densities, $\pi(x)P(x,y)=\pi(y)P(y,x)$ is equivalent to
+$$
+\frac{P(x,y)}{P(y,x)}=\frac{\pi(y)}{\pi(x)}=\frac{\tilde\pi(y)}{\tilde\pi(x)},
+$$
+so any kernel whose forward-to-backward ratio equals $\tilde\pi(y)/\tilde\pi(x)$ leaves $\pi$ invariant, and the unknown $Z$ never appears. Metropolis–Hastings is the systematic way to construct such kernels from an arbitrary proposal (@sec-mh). Two further facts let us assemble complex samplers from simple pieces.
+
+::: {#prp-mixture-composition}
+## Mixtures and compositions of invariant kernels
+Let $P_1,\dots,P_K$ each leave $\pi$ invariant.
+
+1. (**Mixture**) For weights $w_k\ge0$ with $\sum_kw_k=1$, the kernel $\sum_kw_kP_k$ (choose $P_k$ with probability $w_k$, then move) leaves $\pi$ invariant. If every $P_k$ is $\pi$-reversible, so is the mixture.
+2. (**Composition**) The kernel $P_1P_2\cdots P_K$ (apply $P_1$, then $P_2$, ...) leaves $\pi$ invariant. It need not be reversible even if each $P_k$ is, but the symmetric composition $P_1\cdots P_KP_K\cdots P_1$ is.
+:::
+
+::: {.proof}
+(1) $\pi(\sum_kw_kP_k)=\sum_kw_k\pi P_k=\sum_kw_k\pi=\pi$. Reversibility: $\pi(x)\sum_kw_kP_k(x,y)=\sum_kw_k\pi(y)P_k(y,x)$.
+(2) $\pi P_1P_2\cdots P_K=\pi P_2\cdots P_K=\dots=\pi$. For reversibility of the symmetric product, write $D=\operatorname{diag}(\pi)$ on a finite space (the general case is analogous). $\pi$-reversibility of $P$ means $DP=(DP)^\top=P^\top D$. For $S=P_1\cdots P_KP_K\cdots P_1$, repeatedly moving $D$ through the factors gives $DS=P_1^\top\cdots P_K^\top P_K^\top\cdots P_1^\top D=S^\top D$.
+:::
+
+::: {#prp-gibbs-invariance}
+## Updating from a full conditional leaves the joint invariant
+Write $\theta=(\theta_A,\theta_B)$ and let $P_A$ replace $\theta_A$ by a draw from $\pi(\theta_A\mid\theta_B)$, leaving $\theta_B$ unchanged. Then $\pi P_A=\pi$, and $P_A$ is $\pi$-reversible.
+:::
+
+::: {.proof}
+If $(\theta_A,\theta_B)\sim\pi$, then $\theta_B\sim\pi(\theta_B)$. Given $\theta_B$, the new $\theta_A'$ is drawn from $\pi(\theta_A\mid\theta_B)$ independently of the old $\theta_A$. So $(\theta_A',\theta_B)$ has density $\pi(\theta_B)\pi(\theta_A'\mid\theta_B)=\pi(\theta_A',\theta_B)$. Reversibility: the joint density of (old, new) is $\pi(\theta_B)\pi(\theta_A\mid\theta_B)\pi(\theta_A'\mid\theta_B)$, which is symmetric in $\theta_A$ and $\theta_A'$.
+:::
+
+These two propositions justify every Gibbs sampler and every "Metropolis-within-Gibbs" scheme in this book: each block update leaves $\pi$ invariant, so any scan order or random choice of blocks does too. Invariance is the easy part. Whether the resulting chain is irreducible, and how fast it mixes, must be examined separately.
+
+### Initialisation and the bias it introduces {#sec-why-initialisation}
+
+A chain started at $\theta_0=x$ has $\theta_t\sim P^t(x,\cdot)$, which is not $\pi$. Its averages are therefore biased.
+
+::: {#prp-initialisation-bias}
+## Bias of an MCMC average
+Suppose $\lVert P^t(x,\cdot)-\pi\rVert_{\mathrm{TV}}\le M(x)\rho^t$ for some $\rho<1$ (geometric ergodicity, @sec-mcmc-theory), and let $\lvert f\rvert\le1$. Then the average of $N$ iterations after a warm-up of $B$ satisfies
+$$
+\Big\lvert\mathbb E_x\Big[\frac1N\sum_{t=B+1}^{B+N}f(\theta_t)\Big]-\pi(f)\Big\rvert\le\frac{2M(x)\rho^{B+1}}{N(1-\rho)}.
+$$
+:::
+
+::: {.proof}
+For $\lvert f\rvert\le1$, $\lvert\mathbb E_x f(\theta_t)-\pi(f)\rvert=\lvert\int f\,d(P^t(x,\cdot)-\pi)\rvert\le2\lVert P^t(x,\cdot)-\pi\rVert_{\mathrm{TV}}\le2M(x)\rho^t$. Averaging over $t=B+1,\dots,B+N$ and summing the geometric series, $\sum_{t\ge B+1}\rho^t=\rho^{B+1}/(1-\rho)$, gives the bound.
+:::
+
+The bias is $O(1/N)$, while the Monte Carlo standard deviation is $O(N^{-1/2})$. For long runs from reasonable starting points, the initial bias is therefore negligible, and discarding a warm-up mainly removes the transient when the start is far out in the tails, where $M(x)$ is large [@geyer2011introduction, Section 1.11.4]. The warm-up length needed scales with $\log M(x)/\log(1/\rho)$: roughly, the number of iterations the chain needs to "forget" a bad start. In practice:
+
+- start chains at points where the posterior density is not negligible: draws from an approximation (e.g. Laplace, @sec-math-laplace), or points drawn from a distribution somewhat *more dispersed* than the posterior, so that multiple chains can reveal disagreement (@sec-diagnostics);
+- discard a warm-up period, which modern software also uses for **adaptation** of tuning parameters (@sec-adaptive). After adaptation the kernel must be held fixed, or the invariance argument no longer applies;
+- check, rather than assume, that the retained draws show no remaining trend.
+
+### Monte Carlo error under dependence {#sec-why-clt}
+
+@prp-variance-dependent showed that, for a stationary chain, $N\operatorname{Var}(\hat\mu_N)\to\sigma_f^2=\gamma_0\tau_f$. For error bars we need a central limit theorem.
+
+::: {#thm-markov-clt}
+## Markov chain central limit theorem
+Let $P$ be $\pi$-invariant, $\pi$-irreducible, aperiodic and Harris recurrent. Suppose either
+(a) $P$ is geometrically ergodic and $\pi(\lvert f\rvert^{2+\delta})<\infty$ for some $\delta>0$; or
+(b) $P$ is reversible and geometrically ergodic and $\pi(f^2)<\infty$.
+Then, for any initial distribution, $\sqrt N(\hat\mu_N-\pi(f))\xrightarrow{d}\mathrm N(0,\sigma_f^2)$ with $\sigma_f^2=\gamma_0+2\sum_{k\ge1}\gamma_k<\infty$ [@jones2004markov; @roberts2004general, Section 5; @roberts1997geometric].
+:::
+
+The **MCMC standard error** is $\sqrt{\sigma_f^2/N}=\sqrt{\gamma_0\tau_f/N}$, where $\sigma_f^2$ must be *estimated* from the same output, by batch means, spectral methods or autocorrelation sums (@sec-mixing). Consistency of these estimators requires conditions of the same kind [@flegal2010batch]. The effective sample size $N/\tau_f$ translates the error into the equivalent number of independent draws.
+
+When the conditions fail (for example for random-walk Metropolis on some heavy-tailed targets, which is not geometrically ergodic [@jarner2000geometric]), $\sigma_f^2$ may be infinite. The chain average still converges by @thm-tierney, but at an unknown, slower rate, and any reported standard error is unreliable.
+
+### What a finite run cannot tell you {#sec-why-limits}
+
+All the guarantees so far are asymptotic. In practice one has a finite run, and the question is whether it is long enough. The answer is that **no procedure based on the output of a finite run can guarantee that the run has converged.** The following proposition makes this precise.
+
+::: {#prp-indistinguishable}
+## Finite runs cannot distinguish targets that differ where the chain has not been
+Let $P_1$ and $P_2$ be kernels on $\mathsf X$ with invariant distributions $\pi_1\neq\pi_2$, and let $A\subset\mathsf X$ be a set such that $P_1(x,\cdot)=P_2(x,\cdot)$ for all $x\in A$. Start both chains at $x_0\in A$, and let $\eta$ be the probability, under $P_1$, that the chain leaves $A$ within $N$ steps. Then the distributions of the paths $(\theta_0,\dots,\theta_N)$ under $P_1$ and $P_2$ differ in total variation by at most $\eta$. Consequently any diagnostic $D(\theta_0,\dots,\theta_N)$ has nearly the same distribution under both: for every event $E$, $\lvert\mathbb P_1(D\in E)-\mathbb P_2(D\in E)\rvert\le\eta$.
+:::
+
+::: {.proof}
+Construct both chains on one probability space. At each step, while the current state $x$ is in $A$, draw the next state once from the common distribution $P_1(x,\cdot)=P_2(x,\cdot)$ and use it for both chains. After the first exit from $A$, continue each chain independently with its own kernel. The two paths coincide up to time $N$ unless the (common) path leaves $A$ before $N$, an event of probability $\eta$. By the coupling inequality, $\lVert\mathcal L_1(\theta_{0:N})-\mathcal L_2(\theta_{0:N})\rVert_{\mathrm{TV}}\le\mathbb P(\text{paths differ})\le\eta$, and the bound transfers to any function $D$ of the path.
+:::
+
+::: {.callout-tip}
+## Intuition
+Let $\pi_2$ equal $\pi_1$ except for an extra mode far away, outside $A$. If the sampler started near the first mode almost never reaches the second within $N$ steps, its output looks the same under both targets. Every trace plot, every $\widehat R$ and every effective sample size is the same, and so all of them would declare "converged" under $\pi_2$ as readily as under $\pi_1$. Diagnostics can detect *some* failures to converge. None can prove convergence.
+:::
+
+This is not a pathology confined to contrived examples. **Metastability**, where the chain remains in one region for long stretches before moving to another, occurs in mixture models (label switching), in multimodal posteriors and in hierarchical models with funnel-shaped geometry. Running several chains from dispersed starting points makes metastability *more likely to be noticed*, because different chains may get stuck in different places. That is why every practical workflow uses multiple chains (@sec-diagnostics). It still cannot rule out modes that no chain has found.
+
+What can be done:
+
+1. **Understand the posterior's geometry analytically** where possible (number of modes, boundaries, scales).
+2. **Validate the sampler** on problems with known answers, and by simulation-based calibration (@sec-validation).
+3. **Use samplers designed for the difficulty**: tempering for multimodality (@sec-specialized), HMC and reparameterisation for strong curvature (@sec-hmc, @sec-hierarchical).
+4. **Report results honestly**: "no evidence of non-convergence from four chains of 2000 iterations" is accurate, while "the chains converged" is not provable.
+
+## Worked example: a bimodal posterior {#sec-why-worked}
+
+Consider the target $\pi=0.7\,\mathrm N(-4,1)+0.3\,\mathrm N(4,1)$, a stylised posterior with two well-separated modes (such posteriors arise, for instance, in mixture models and in models with sign ambiguities). A random-walk Metropolis sampler with proposal standard deviation 1 (the algorithm is derived in @sec-mh) is started in the left mode.
+
+```{r}
+#| label: fig-why-bimodal
+#| fig-cap: "Random-walk Metropolis on a bimodal target. Left: one chain of 5000 iterations started at $-4$ never visits the right mode, and its trace looks perfectly stable. Right: histogram of the same draws against the true target (orange), which has 30% of its mass in the unvisited mode."
+#| fig-height: 3.4
+tg <- target_mixture(c(0.7, 0.3), c(-4, 4), c(1, 1))
+set.seed(1101)
+out <- metropolis_hastings(tg$log_density, initial = -4, n_iter = 5000, proposal_sd = 1)
+par(mfrow = c(1, 2))
+trace_plot(out$draws, ylab = expression(theta), ylim = c(-8, 8))
+hist_density(out$draws, tg$density, breaks = 50, xlab = expression(theta), xlim = c(-8, 8))
+c(acceptance = out$acceptance_rate, mean_estimate = mean(out$draws), true_mean = tg$mean,
+  naive_ess = length(out$draws) / iat(out$draws))
+```
+
+The single chain gives a precise-looking estimate of the mean (small MCSE, healthy acceptance rate, moderate autocorrelation) that is wrong by more than two units. Nothing in its own output reveals this. Four chains started at dispersed points tell a different story:
+
+```{r}
+#| label: why-multi-chain
+set.seed(1102)
+starts <- c(-8, -2, 2, 8)
+chains <- sapply(starts, function(x0) metropolis_hastings(tg$log_density, x0, 5000, 1)$draws)
+rbind(start = starts, chain_mean = round(colMeans(chains), 2))
+c(rank_normalised_rhat = rhat_rank(chains[2501:5000, ]))
+```
+
+The chains disagree. Those started far out stay in the nearest mode, and the two started near the middle switch between modes only a few times, so their means lie in between. The disagreement produces a large $\widehat R$ (about 1.4). Multiple chains detect the problem *here* only because some chains happened to start in each mode. With all four chains started on the left, every diagnostic would pass (@exr-why-5). A sampler that can actually move between the modes is developed in @sec-specialized.
+
+**How long would a single chain need?** To move between the modes, the chain must pass through the region near $\theta=0$, where the density is about $e^{-7.6}$ times its peak. In a separate run of $2\times10^6$ iterations, the same sampler crossed $\theta=0$ about 600 times, roughly once every 3400 iterations, and many crossings were immediately reversed. Even after two million iterations, the fraction of time spent in the right mode was 0.35 rather than 0.30. A run of 5000 iterations typically switches modes zero or one times, which cannot estimate the weights of the modes at all. Barriers of this kind grow exponentially with the separation of the modes (@exr-why-6) and with dimension.
+
+## R implementation {#sec-why-r}
+
+The experiment uses the educational random-walk Metropolis sampler `metropolis_hastings()` from `R/samplers/metropolis-hastings.R` (derived in the next chapter), the mixture target `target_mixture()` from `R/models/targets.R`, and the diagnostics `iat()` and `rhat_rank()` from `R/diagnostics/diagnostics.R` (developed in @sec-diagnostics). The composition and mixture properties of @prp-mixture-composition can be checked exactly on a finite space:
+
+```{r}
+#| label: why-composition-check
+target <- c(1, 2, 4, 2, 1) / 10
+# Two different reversible kernels for the same target: nearest-neighbour Metropolis
+# and a Metropolis kernel proposing uniformly among all states.
+Q1 <- matrix(0, 5, 5); for (i in 1:5) for (j in c(i - 1, i + 1)) if (j %in% 1:5) Q1[i, j] <- 0.5
+diag(Q1) <- 1 - rowSums(Q1)
+Q2 <- matrix(1 / 5, 5, 5)
+P1 <- mh_transition_matrix(target, Q1); P2 <- mh_transition_matrix(target, Q2)
+c(P1_invariant = isTRUE(all.equal(as.vector(target %*% P1), target)),
+  mixture_invariant = isTRUE(all.equal(as.vector(target %*% (0.3 * P1 + 0.7 * P2)), target)),
+  composition_invariant = isTRUE(all.equal(as.vector(target %*% (P1 %*% P2)), target)),
+  composition_reversible = is_reversible(P1 %*% P2, target),
+  symmetric_composition_reversible = is_reversible(P1 %*% P2 %*% P2 %*% P1, target))
+```
+
+As @prp-mixture-composition predicts, the plain composition $P_1P_2$ is invariant but not reversible, and the symmetric composition is both.
+
+## Computational experiment: initialisation bias and warm-up {#sec-why-experiment}
+
+We measure the bias and the mean squared error of the MCMC average of $\theta$ as functions of the warm-up length, for a random-walk Metropolis chain targeting $\mathrm N(0,1)$ started far away at $\theta_0=25$. Each configuration is replicated 400 times.
+
+```{r}
+#| label: fig-why-burnin
+#| fig-cap: "Bias (left) and root mean squared error (right) of the MCMC estimate of the mean of $\\mathrm N(0,1)$ from chains of total length 3000 started at $\\theta_0=25$, as a function of the number of warm-up iterations discarded. A short warm-up removes most of the initial bias; beyond that, discarding draws only increases the variance."
+#| fig-height: 3.4
+set.seed(1103)
+B_vals <- c(0, 25, 50, 100, 200, 500, 1000, 2000)
+total <- 3000
+sims <- replicate(400, metropolis_hastings(function(x) -x^2 / 2, 25, total, 2.4)$draws)
+res <- t(sapply(B_vals, function(B) { m <- colMeans(sims[(B + 1):total, , drop = FALSE])
+  c(B = B, bias = mean(m), rmse = sqrt(mean(m^2))) }))
+par(mfrow = c(1, 2))
+plot(res[, "B"] + 1, res[, "bias"], log = "x", type = "b", pch = 16, col = course_cols[["blue"]],
+     xlab = "warm-up length B + 1", ylab = "bias")
+abline(h = 0, lty = 2, col = course_muted)
+plot(res[, "B"] + 1, res[, "rmse"], log = "x", type = "b", pch = 16, col = course_cols[["orange"]],
+     xlab = "warm-up length B + 1", ylab = "RMSE")
+round(res, 4)
+```
+
+Without warm-up, the bias is dominated by the first few dozen iterations spent descending from $\theta_0=25$. Discarding about 50 iterations removes it, and discarding more only shrinks the effective sample size and increases the RMSE. Here warm-up is short because random-walk Metropolis on a one-dimensional Gaussian forgets its start quickly. In harder problems the transient can last thousands of iterations, which is one reason modern defaults discard half of each chain as warm-up and use that period for adaptation (@sec-adaptive).
+
+## Diagnostics and validation {#sec-why-validation}
+
+This chapter's main message for diagnostics is negative but important: they can only *detect* non-convergence. Constructive steps:
+
+- **Verify invariance exactly** for the kernel you implemented, on a small discrete or Gaussian test case (as `mh_transition_matrix()` and the tests in `tests/testthat/` do).
+- **Check irreducibility** by reasoning about the proposals: can every region of positive posterior mass be reached?
+- **Use multiple, dispersed chains** and compare them (@sec-diagnostics).
+- **Validate end-to-end** on simulated data with known parameters and by simulation-based calibration (@sec-validation).
+- **Check moment conditions** before trusting MCSEs (@thm-markov-clt).
+
+## Interpretation {#sec-why-interpretation}
+
+MCMC works because invariance can be enforced locally from ratios of the unnormalised posterior, and because irreducible aperiodic chains converge to their invariant distribution. The cost is dependence: errors are larger than for independent draws by the factor $\sqrt{\tau_f}$, and the guarantee is only asymptotic. A finite run is evidence, not proof, and the strength of the evidence depends on whether the sampler can move freely through the posterior. When it cannot, the output can look excellent and be badly wrong.
+
+## Limitations and common errors {#sec-why-errors}
+
+- **Assuming that a stable-looking trace means convergence.** Metastable chains look stable (@prp-indistinguishable).
+- **Starting all chains at the same point**, or at the mode, which defeats multi-chain diagnostics.
+- **Adapting the kernel during the retained part of the run** without satisfying the conditions of @sec-adaptive. Adaptation can destroy invariance.
+- **Excessive warm-up** in place of a better sampler. Discarding draws reduces bias only when bias exists, and it always costs precision.
+- **Reporting MCSEs when the CLT may fail**, for example for heavy-tailed targets with random-walk samplers, or for quantities with infinite posterior variance.
+- **Treating "the chain has run for a long time" as a measure of reliability**. What matters is the number of *effective* draws and whether all regions of posterior mass have been visited.
+
+## Chapter summary {#sec-why-summary}
+
+- MCMC constructs kernels using only ratios of the unnormalised posterior, so the normalising constant never appears.
+- Mixtures and compositions of $\pi$-invariant kernels are $\pi$-invariant (@prp-mixture-composition), and updating a block from its full conditional is $\pi$-reversible (@prp-gibbs-invariance).
+- Initialisation bias is $O(1/N)$ for geometrically ergodic chains (@prp-initialisation-bias). Warm-up removes the transient, and longer warm-up only costs precision.
+- Under geometric ergodicity and moment conditions, a CLT holds with variance $\gamma_0\tau_f$ (@thm-markov-clt), giving the MCMC standard error and the effective sample size $N/\tau_f$.
+- No diagnostic based on a finite run can certify convergence (@prp-indistinguishable). Metastability makes this a practical concern, and multiple dispersed chains, validation and well-designed samplers are the response.
+
+## Exercises {#sec-why-exercises}
+
+::: {#exr-why-1}
+**[Conceptual ★]** Explain in your own words why the Metropolis–Hastings acceptance probability can be computed without knowing $p(y)$, and why the same is not true of rejection sampling with the prior as envelope (@sec-r-rejection), even though that also uses only $\tilde\pi$.
+:::
+
+::: {#exr-why-2}
+**[Proof ★★]** Show that a random-scan Gibbs sampler, which picks one of $K$ blocks uniformly at random and updates it from its full conditional, is $\pi$-reversible, while the deterministic-scan sampler (blocks $1,\dots,K$ in order) generally is not.
+:::
+
+::: {#exr-why-3}
+**[Proof ★★]** Construct two $\pi$-invariant kernels $P_1,P_2$ on a three-state space such that $P_1$ and $P_2$ are each reducible, but $P_1P_2$ is irreducible. What does this imply for designing samplers from simple moves?
+:::
+
+::: {#exr-why-4}
+**[Mathematical ★★]** For the AR(1) chain of @exm-ar1 started at $x_0$, compute the exact bias $\mathbb E[\hat\mu_N]-0$ of the average of $\theta_{B+1},\dots,\theta_{B+N}$ and compare it with the bound of @prp-initialisation-bias.
+:::
+
+::: {#exr-why-5}
+**[Simulation ★★]** Repeat the bimodal worked example with all four chains started in the left mode (e.g. at $-5,-4.5,-3.5,-3$). Compute $\widehat R$, bulk-ESS and the estimated mean with its MCSE. Write a sentence describing what an analyst who saw only these diagnostics would conclude, and what is actually true.
+:::
+
+::: {#exr-why-6}
+**[Simulation ★★]** For the bimodal target with means $\pm m$, estimate by simulation the average number of iterations between crossings of $\theta=0$ for random-walk Metropolis with proposal standard deviation 1, for $m=1,1.5,2,2.5,3$. Plot the logarithm of the crossing time against $m^2$ and interpret the slope.
+:::
+
+::: {#exr-why-7}
+**[Critique ★★]** A paper states: "We ran a single chain of $10^6$ iterations, discarded the first $5\times10^5$ as burn-in, and convergence was confirmed by the Geweke diagnostic." Discuss each part of this statement.
+:::
+
+::: {#exr-why-8}
+**[Research ★★★]** Coupling-based methods give *unbiased* MCMC estimators and upper bounds on the distance to stationarity from finite runs [@jacob2020unbiased]. Read the paper and explain how a coupling of two chains that meet at a random time yields an unbiased estimator of $\pi(f)$. What assumptions are needed, and why does @prp-indistinguishable not contradict this?
+:::
+
+## Further reading {#sec-why-reading}
+
+- @tierney1994markov: the general theory of MCMC kernels, mixtures and compositions, and convergence.
+- @geyer2011introduction: a lucid practical and theoretical introduction, including a critical view of burn-in.
+- @roberts2004general and @jones2004markov: convergence rates and the Markov chain CLT.
+- @robert2004monte, Chapters 6–7: MCMC theory from the perspective of Monte Carlo methods.
+- @robert2011short and @diaconis2009markov: historical perspectives on the development of MCMC.
+- @jacob2020unbiased: coupling-based unbiased estimation, a modern response to the burn-in problem.
+
+## Solutions {#sec-why-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-why-1
+The MH acceptance probability depends on $\tilde\pi(\theta')/\tilde\pi(\theta)$, and the constant $Z$ cancels in the ratio. Rejection sampling with the prior as envelope also uses only $\tilde\pi=L\pi$ and the bound $M=L(\hat\theta)$, so it does not need $Z$ either. Its difficulty is different: it needs a global envelope, and its acceptance rate $Z/M$ collapses in high dimensions. MCMC needs only local comparisons and no envelope, at the price of producing dependent draws.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-why-2
+Each single-block Gibbs update $P_k$ is $\pi$-reversible (@prp-gibbs-invariance), and the random scan is the mixture $\frac1K\sum_kP_k$, which is reversible by @prp-mixture-composition(1). The deterministic scan is the composition $P_1\cdots P_K$, which is invariant but generally not reversible, because reversing time would require applying the blocks in the opposite order. The symmetric scan $P_1\cdots P_KP_K\cdots P_1$ is reversible.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-why-3
+With uniform $\pi$ on $\{1,2,3\}$, let $P_1$ swap or stay between states 1 and 2 (each with probability $\frac12$) and keep 3 fixed, and let $P_2$ do the same for states 2 and 3 while keeping 1 fixed. Each is symmetric, hence uniform-reversible, and each is reducible. The product $P_1P_2$ can move $1\to2\to3$ and back, so it is irreducible. Samplers are commonly built from moves that each explore only part of the space (single-coordinate updates), and irreducibility comes from combining them.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-why-4
+$\mathbb E[\theta_t]=\phi^tx_0$, so the bias is $\frac{x_0}N\sum_{t=B+1}^{B+N}\phi^t=\frac{x_0\phi^{B+1}(1-\phi^N)}{N(1-\phi)}$. It is $O(1/N)$ and decays geometrically in $B$, matching the form of @prp-initialisation-bias with $\rho=\phi$ and $M(x)\propto\lvert x_0\rvert$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-why-5
+All chains remain in the left mode. $\widehat R$ is close to 1, bulk-ESS is in the hundreds or thousands, and the estimated mean is about $-4$ with a small MCSE. An analyst would conclude that the posterior mean is $-4.0\pm0.05$. The true mean is $0.7\times(-4)+0.3\times4=-1.6$, and 30% of the posterior mass has never been seen. The diagnostics are all correct about the chains. The chains are wrong about the posterior.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-why-6
+The density at 0 relative to the modes is about $e^{-m^2/2}$, and the expected crossing time grows roughly like $e^{m^2/2}$ times a polynomial factor. The plot of $\log(\text{crossing time})$ against $m^2$ is therefore approximately linear with slope near $\frac12$. Exponential growth in the barrier height is the signature of metastability.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-why-7
+(i) A single chain cannot reveal that different starting points lead to different answers; multiple dispersed chains are standard practice. (ii) Discarding half the chain is wasteful if the transient is short, and insufficient if mixing is so slow that the chain never reached equilibrium; burn-in length should be justified by evidence. (iii) The Geweke diagnostic [@geweke1992evaluating] compares early and late segments of one chain. It cannot detect a chain stuck in one mode, and it relies on spectral variance estimates. "Confirmed" overstates what any diagnostic can do (@prp-indistinguishable). Better wording: "no diagnostic indicated non-convergence," with $\widehat R$, ESS and MCSE reported for multiple chains.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-why-8
+Run two chains $X$ and $Y$ with the same kernel, $Y$ lagged by one step, coupled so that they meet exactly at a random time $\tau$ and stay together afterwards. The estimator $f(X_k)+\sum_{t=k+1}^{\tau-1}\{f(X_t)-f(Y_{t-1})\}$ has expectation $\pi(f)$, because the telescoping sum corrects the bias of $f(X_k)$. The assumptions are that the meeting time has finite expectation (with geometric tails) and that a moment condition holds on $f$. This does not contradict @prp-indistinguishable: if the chains rarely leave a region before meeting, the meeting time is short and the estimator inherits the same blindness. Unbiasedness holds in expectation, and a single realisation, or the sample average of a few, can still miss mass the coupled chains do not explore. The variance of the estimator reflects this, but only once rare excursions are actually observed.
+:::

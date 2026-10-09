@@ -1,0 +1,398 @@
+# Bayesian Estimation and Decision Theory {#sec-decision}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. formulate estimation, interval estimation and testing as decision problems with explicit loss functions;
+2. prove that Bayes actions minimise Bayes risk, and derive the Bayes estimators under squared, absolute, quantile and 0–1 losses;
+3. construct equal-tailed and highest-posterior-density (HPD) credible regions, prove the optimality of HPD regions, and state their limitations;
+4. compute posterior probabilities of hypotheses, Bayes factors and posterior odds, and explain Lindley's paradox;
+5. interpret posterior probabilities correctly, and explain precisely how credible intervals differ from confidence intervals;
+6. compute all of these summaries from posterior draws in R and quantify their Monte Carlo error.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-bayes-paradigm (posterior, marginal likelihood, odds form @eq-odds-form) and @sec-conjugate (Beta–Binomial and normal models).
+:::
+
+## Motivation {#sec-dec-motivation}
+
+A posterior distribution is a complete statement of uncertainty, but people need answers: a number to report, an interval for a paper, a decision about whether to adopt a treatment. Different summaries answer different questions, and the right one depends on the *consequences of being wrong*. Decision theory makes this explicit. Specify a loss function, then choose the action with the smallest posterior expected loss. Familiar summaries such as the posterior mean, the median and credible intervals turn out to be optimal under particular losses. This tells us when each is appropriate.
+
+## Definitions and notation {#sec-dec-definitions}
+
+::: {#def-decision-problem}
+## Decision problem
+A **decision problem** consists of a parameter space $\Theta$, an **action space** $\mathcal A$, and a **loss function** $L:\Theta\times\mathcal A\to[0,\infty)$, where $L(\theta,a)$ is the cost of taking action $a$ when the parameter is $\theta$. A **decision rule** $\delta$ maps data to actions.
+
+- The **posterior expected loss** of action $a$ is $\rho(a\mid y)=\int L(\theta,a)\,\pi(\theta\mid y)\,d\theta$.
+- A **Bayes action** $\delta^\pi(y)$ minimises $\rho(a\mid y)$ over $a\in\mathcal A$.
+- The **frequentist risk** of a rule is $R(\theta,\delta)=\int L(\theta,\delta(y))\,p(y\mid\theta)\,dy$.
+- The **Bayes risk** is $r(\pi,\delta)=\int R(\theta,\delta)\,\pi(\theta)\,d\theta$.
+:::
+
+Estimation takes $\mathcal A=\Theta$, interval estimation takes $\mathcal A$ to be a family of sets, and testing takes $\mathcal A=\{\text{accept }H_0,\ \text{accept }H_1\}$.
+
+## Mathematical development {#sec-dec-development}
+
+### Bayes actions minimise Bayes risk {#sec-dec-bayes-rule}
+
+::: {#thm-bayes-rule}
+## Optimality of Bayes actions
+Suppose that for each $y$ a Bayes action $\delta^\pi(y)$ exists and that $r(\pi,\delta^\pi)<\infty$. Then $r(\pi,\delta^\pi)\le r(\pi,\delta)$ for every decision rule $\delta$.
+:::
+
+::: {.proof}
+Because $L\ge0$, Tonelli's theorem allows us to exchange the order of integration:
+$$
+r(\pi,\delta)=\iint L(\theta,\delta(y))\,p(y\mid\theta)\pi(\theta)\,dy\,d\theta=\int\Big(\int L(\theta,\delta(y))\,\pi(\theta\mid y)\,d\theta\Big)p(y)\,dy=\int\rho(\delta(y)\mid y)\,p(y)\,dy.
+$$
+For every $y$, $\rho(\delta(y)\mid y)\ge\rho(\delta^\pi(y)\mid y)$ by definition of the Bayes action, so integrating against $p(y)$ gives the result.
+:::
+
+The theorem connects the two perspectives. Minimising *posterior* expected loss for the observed data, which is a conditional and purely Bayesian operation, also minimises *average frequentist risk* over the prior. Moreover, under mild conditions Bayes rules and their limits are the only *admissible* rules, those not uniformly beaten by another rule. This is Wald's complete class theorem [@berger1985decision, Chapter 8; @robert2007choice, Chapter 8].
+
+### Point estimation {#sec-dec-point}
+
+::: {#prp-bayes-estimators}
+## Bayes estimators for standard losses
+Let $\theta$ be real-valued with a posterior having a finite mean where needed.
+
+1. **Squared error** $L(\theta,a)=(\theta-a)^2$: the Bayes estimator is the posterior mean $\mathbb E[\theta\mid y]$.
+2. **Absolute error** $L(\theta,a)=\lvert\theta-a\rvert$: it is any posterior median.
+3. **Quantile (pinball) loss** $L_\tau(\theta,a)=\tau(\theta-a)^++(1-\tau)(a-\theta)^+$, $0<\tau<1$: it is any posterior $\tau$-quantile.
+4. **0–1 loss** $L(\theta,a)=\mathbf 1\{\theta\neq a\}$ on a countable $\Theta$: it is the posterior mode. For a continuous parameter with a continuous posterior density, the Bayes estimators under $\mathbf 1\{\lvert\theta-a\rvert>\epsilon\}$ converge to the posterior mode as $\epsilon\to0$, under regularity conditions (e.g., a unique and well-separated mode).
+:::
+
+::: {.proof}
+(1) $\rho(a)=\mathbb E[(\theta-\bar\theta+\bar\theta-a)^2\mid y]=\operatorname{Var}(\theta\mid y)+(\bar\theta-a)^2$ with $\bar\theta=\mathbb E[\theta\mid y]$, minimised at $a=\bar\theta$.
+(3) For a continuous posterior with CDF $F$, $\rho(a)=\tau\int_a^\infty(\theta-a)\,dF+(1-\tau)\int_{-\infty}^a(a-\theta)\,dF$, and differentiating under the integral gives $\rho'(a)=-\tau\{1-F(a)\}+(1-\tau)F(a)=F(a)-\tau$. So $\rho$ is convex with minimum where $F(a)=\tau$. (For general $F$ the same argument with one-sided derivatives gives any $\tau$-quantile.) (2) is the case $\tau=\frac12$, up to a factor of 2.
+(4) $\rho(a)=1-\pi(a\mid y)$ on a countable space, minimised at the mode. In the continuous case $\rho(a)=1-\mathbb P(\lvert\theta-a\rvert\le\epsilon\mid y)\approx1-2\epsilon\,\pi(a\mid y)$ for small $\epsilon$, which is minimised near the mode.
+:::
+
+::: {.callout-tip}
+## Intuition
+Squared error punishes large errors heavily, so its estimator is pulled by the tails (the mean). Absolute error treats all errors proportionally, which gives the median, robust to the tails. Asymmetric linear loss, where overestimating costs less than underestimating, gives a quantile above the median. A safety engineer estimating a load should therefore report an upper quantile, not the mean.
+:::
+
+The **posterior mode** (the MAP estimate) is the least natural of the four. It is not invariant under reparameterisation (@exr-math-5), it ignores everything except the height of the density at one point, and for skewed or high-dimensional posteriors it can be far from the bulk of the probability mass. It is useful as a starting point for optimisation-based approximations (@sec-math-laplace) rather than as a summary. The posterior mean and median transform consistently under monotone reparameterisations (the median exactly, the mean only under affine maps).
+
+### Credible regions {#sec-dec-intervals}
+
+::: {#def-credible-region}
+## Credible region
+A set $C(y)\subseteq\Theta$ with $\mathbb P(\theta\in C(y)\mid y)\ge1-\alpha$ is a $100(1-\alpha)\%$ **credible region**. For scalar $\theta$, the **equal-tailed** interval is $[q_{\alpha/2},q_{1-\alpha/2}]$, between posterior quantiles. The **highest posterior density (HPD)** region is $H_k=\{\theta:\pi(\theta\mid y)\ge k\}$ with $k$ the largest constant such that $\mathbb P(H_k\mid y)\ge1-\alpha$.
+:::
+
+::: {#prp-hpd-shortest}
+## HPD regions have minimal volume
+Let the posterior have a density, and suppose $\mathbb P(H_k\mid y)=1-\alpha$ exactly. Every region $C$ with $\mathbb P(C\mid y)\ge1-\alpha$ satisfies $\lvert C\rvert\ge\lvert H_k\rvert$, where $\lvert\cdot\rvert$ is Lebesgue measure (length in one dimension).
+:::
+
+::: {.proof}
+Write $P(\cdot)$ for posterior probability. Since $P(C)\ge P(H_k)$, subtracting $P(C\cap H_k)$ gives $P(C\setminus H_k)\ge P(H_k\setminus C)$. On $C\setminus H_k$ the density is below $k$, so $P(C\setminus H_k)\le k\lvert C\setminus H_k\rvert$. On $H_k\setminus C$ it is at least $k$, so $P(H_k\setminus C)\ge k\lvert H_k\setminus C\rvert$. Combining, $k\lvert C\setminus H_k\rvert\ge k\lvert H_k\setminus C\rvert$, and adding $\lvert C\cap H_k\rvert$ to both sides gives $\lvert C\rvert\ge\lvert H_k\rvert$.
+:::
+
+HPD regions are therefore the Bayes action for a loss that adds the region's size to a penalty for not covering $\theta$. They have three limitations that equal-tailed intervals avoid.
+
+1. **They are not invariant under reparameterisation.** The HPD interval for $\sigma^2$, mapped through $\sqrt\cdot$, is not the HPD interval for $\sigma$, because densities (and hence "highest density") change with the Jacobian. Equal-tailed intervals transform correctly under any monotone map.
+2. **They can be disconnected.** For multimodal posteriors the HPD region is a union of intervals. This is correct but awkward to report.
+3. **Their Monte Carlo error behaves differently.** From $S$ posterior draws, the shortest interval containing a fraction $1-\alpha$ of the sorted draws estimates a unimodal HPD interval consistently [@chen1999monte]. The estimate depends on the spacing of draws at both ends, so for a skewed posterior one endpoint can be noisier than the corresponding quantile and the other less noisy (see the experiment below). Every endpoint that lies in a sparsely populated tail has large Monte Carlo error.
+
+For skewed posteriors near a boundary (variances, probabilities near 0) the HPD interval is preferable, because the equal-tailed interval may exclude the most probable values.
+
+### Hypothesis testing, posterior odds and Bayes factors {#sec-dec-testing}
+
+To compare hypotheses $H_0:\theta\in\Theta_0$ and $H_1:\theta\in\Theta_1$, a Bayesian computes their posterior probabilities. With losses $c_I$ for wrongly choosing $H_1$ and $c_{II}$ for wrongly choosing $H_0$, the posterior expected losses are $c_I\,\mathbb P(H_0\mid y)$ for choosing $H_1$ and $c_{II}\,\mathbb P(H_1\mid y)$ for choosing $H_0$, so:
+
+::: {#prp-bayes-test}
+## Bayes test
+The Bayes action chooses $H_1$ if and only if $\mathbb P(H_1\mid y)>c_I/(c_I+c_{II})$.
+:::
+
+With equal costs this is "choose the more probable hypothesis". The **Bayes factor** separates the contribution of the data from that of the prior probabilities $\pi_0=\mathbb P(H_0)$ and $\pi_1=1-\pi_0$:
+$$
+B_{10}=\frac{p(y\mid H_1)}{p(y\mid H_0)},\qquad
+\frac{\mathbb P(H_1\mid y)}{\mathbb P(H_0\mid y)}=B_{10}\times\frac{\pi_1}{\pi_0},
+$$ {#eq-bayes-factor}
+where $p(y\mid H_j)=\int_{\Theta_j}p(y\mid\theta)\,g_j(\theta)\,d\theta$ is the marginal likelihood under $H_j$, with $g_j$ the prior density of $\theta$ *given* $H_j$. A commonly used scale for $2\log B_{10}$ [@kass1995bayes] calls values of 0–2 "not worth more than a bare mention", 2–6 "positive", 6–10 "strong" and above 10 "very strong". Such labels are conventions, not calibrated probabilities.
+
+**Point null hypotheses.** For $H_0:\theta=\theta_0$ with a continuous parameter, any continuous prior gives $\mathbb P(H_0)=0$ and hence $\mathbb P(H_0\mid y)=0$, whatever the data. A test of a point null therefore requires a *mixed* prior that places mass $\pi_0>0$ on $\theta_0$ and spreads the rest according to a density $g_1$. This is the setting in which Bayesian and frequentist tests can disagree sharply.
+
+::: {#prp-lindley}
+## Lindley's paradox
+Let $y_1,\dots,y_n\mid\theta\stackrel{\text{iid}}\sim\mathrm N(\theta,\sigma^2)$, $\sigma$ known, $H_0:\theta=0$ versus $H_1:\theta\sim\mathrm N(0,\tau^2)$, and let $z=\sqrt n\bar y/\sigma$. Then
+$$
+B_{01}=\sqrt{1+\frac{n\tau^2}{\sigma^2}}\ \exp\Big\{-\frac{z^2}{2}\cdot\frac{n\tau^2}{\sigma^2+n\tau^2}\Big\}.
+$$ {#eq-lindley}
+For fixed $z$ (a fixed p-value), $B_{01}\to\infty$ as $n\to\infty$ or as $\tau\to\infty$.
+:::
+
+::: {.proof}
+$\bar y$ is sufficient, with $\bar y\mid H_0\sim\mathrm N(0,\sigma^2/n)$ and, integrating $\theta$ out, $\bar y\mid H_1\sim\mathrm N(0,\sigma^2/n+\tau^2)$. Taking the ratio of these densities at $\bar y$ and substituting $\bar y^2=z^2\sigma^2/n$ gives @eq-lindley. The prefactor grows like $\sqrt n$ (or $\tau$), while the exponent tends to the constant $-z^2/2$.
+:::
+
+A result "significant at $p=0.05$" ($z=1.96$) can therefore be strong evidence *for* the null in a large sample [@lindley1957statistical]. The two analyses answer different questions. The p-value measures how surprising the data are under $H_0$. The Bayes factor compares how well $H_0$ and $H_1$ *predicted* the data, and a diffuse $H_1$ spreads its predictions so thinly that it predicts any particular moderate effect poorly. The proposition also shows that **Bayes factors are highly sensitive to the prior under the alternative** even when the posterior under $H_1$ is not, a theme of @sec-model-comparison [@kass1995bayes; @robert2007choice, Section 5.2].
+
+### Credible versus confidence intervals {#sec-dec-credible-confidence}
+
+A $95\%$ **confidence interval** procedure $C(Y)$ satisfies $\mathbb P_\theta(\theta\in C(Y))\ge0.95$ for *every* $\theta$: the probability refers to repetitions of the experiment at fixed $\theta$. A $95\%$ **credible interval** satisfies $\mathbb P(\theta\in C(y)\mid y)=0.95$ for the observed $y$: the probability refers to $\theta$ given the data. These are different properties, and neither implies the other. In regular models with large samples and weak priors the two intervals nearly coincide numerically (Bernstein–von Mises, @sec-bayes-interpretations), which encourages a confusion of interpretations. In small samples, or near boundaries, they can differ sharply.
+
+::: {#exm-uniform-location}
+## A confidence interval we know contains the parameter
+Let $y_1,y_2\mid\theta\stackrel{\text{iid}}\sim\mathrm U(\theta-\frac12,\theta+\frac12)$, and let $y_{(1)}\le y_{(2)}$ be the order statistics with range $r=y_{(2)}-y_{(1)}$. The interval $[y_{(1)},y_{(2)}]$ contains $\theta$ exactly when one observation falls on each side of $\theta$, which happens with probability $1/2$ for every $\theta$, so it is a 50% confidence interval. But if $r\ge\frac12$, then $\theta$ is *certainly* in the interval, since both observations lie within $\frac12$ of $\theta$. Under a flat prior the posterior is uniform on $[y_{(2)}-\frac12,\ y_{(1)}+\frac12]$ (length $1-r$), so the posterior probability of the interval is $\min\{r/(1-r),\,1\}$. It equals 1 for $r\ge\frac12$ and is small for small $r$. The confidence statement "50%" is correct on average over repetitions, and it is a poor description of what *these* data say.
+:::
+
+### Interpreting posterior probabilities {#sec-dec-interpretation-probs}
+
+$\mathbb P(\theta>0\mid y)=0.97$ means: under the model and prior, given the data, the probability that $\theta$ is positive is 0.97. It is **not** $1-p$ for some p-value, although for one-sided tests with flat priors in normal models the two numbers coincide: then $\mathbb P(\theta\le0\mid y)$ equals the one-sided p-value. It is also not the probability that "the effect is important". The **magnitude** of $\theta$ matters, which is why interval summaries and probabilities of practically relevant regions, such as $\mathbb P(\theta>\delta_{\min}\mid y)$ for a minimally important effect $\delta_{\min}$, are usually more informative than $\mathbb P(\theta>0\mid y)$.
+
+## Worked example: an A/B test as a decision problem {#sec-dec-worked}
+
+Two versions of a web page are shown to randomly assigned visitors: $y_A=38$ of $n_A=400$ and $y_B=52$ of $n_B=410$ convert. With independent $\mathrm{Beta}(1,1)$ priors, the posteriors are $\theta_A\sim\mathrm{Beta}(39,363)$ and $\theta_B\sim\mathrm{Beta}(53,359)$ (@prp-beta-binomial). The quantity of interest is the difference $\delta=\theta_B-\theta_A$, whose posterior is not of closed form but is easy to simulate.
+
+```{r}
+#| label: dec-ab-draws
+yA <- 38; nA <- 400; yB <- 52; nB <- 410
+S <- 2e5
+set.seed(601)
+thA <- rbeta(S, 1 + yA, 1 + nA - yA); thB <- rbeta(S, 1 + yB, 1 + nB - yB)
+delta <- thB - thA
+dens <- density(delta, n = 2048)
+c(mean = mean(delta), median = median(delta), mode = dens$x[which.max(dens$y)],
+  P_B_better = mean(delta > 0), P_B_better_by_1pt = mean(delta > 0.01))
+rbind(equal_tailed = credible_interval(delta, 0.95), hpd = hpd_interval(delta, 0.95))
+```
+
+The posterior of $\delta$ is nearly symmetric, so mean, median and mode agree, and the equal-tailed and HPD intervals almost coincide. The probability that B converts better is about 0.92, and the probability that it is better by at least one percentage point is lower, about 0.84.
+
+**A decision.** Suppose switching to B costs nothing, and the loss from choosing the worse page is proportional to the conversion rate forgone. Then the expected loss of each choice is an *expected regret*:
+$$
+\rho(\text{choose }B)=\mathbb E[\max(\theta_A-\theta_B,0)\mid y],\qquad\rho(\text{choose }A)=\mathbb E[\max(\theta_B-\theta_A,0)\mid y].
+$$
+
+```{r}
+#| label: dec-ab-regret
+regret <- c(choose_A = mean(pmax(delta, 0)), choose_B = mean(pmax(-delta, 0)))
+mcse <- c(sd(pmax(delta, 0)), sd(pmax(-delta, 0))) / sqrt(S)   # independent draws
+rbind(expected_loss = regret, mcse = mcse)
+```
+
+Choosing B has much smaller expected loss, and the Monte Carlo error is negligible relative to the difference. If switching had a fixed cost $c$, B would be chosen only if $\rho(A)-\rho(B)>c$, which is a business decision that the posterior informs but does not make.
+
+**A Bayes factor for "no difference".** Compare $H_0:\theta_A=\theta_B=\theta$ with $\theta\sim\mathrm{Beta}(1,1)$ against $H_1$: independent $\mathrm{Beta}(1,1)$ priors. Both marginal likelihoods are products of binomial coefficients and Beta functions:
+
+```{r}
+#| label: dec-ab-bayes-factor
+log_m0 <- lchoose(nA, yA) + lchoose(nB, yB) + lbeta(1 + yA + yB, 1 + nA + nB - yA - yB) - lbeta(1, 1)
+log_m1 <- dbetabinom_log(yA, nA, 1, 1) + dbetabinom_log(yB, nB, 1, 1)
+c(B10 = exp(log_m1 - log_m0), two_log_B10 = 2 * (log_m1 - log_m0))
+```
+
+The Bayes factor *favours* $H_0$ ($2\log B_{01}\approx3.7$, "positive" on the Kass–Raftery scale) even though $\mathbb P(\delta>0\mid y)\approx0.92$. There is no contradiction. The diffuse alternative spreads prior probability over differences as large as $\pm1$, and these data are better predicted by "no difference" than by "some difference, anywhere in $[-1,1]$". The two numbers answer different questions. The decision analysis above is the relevant one for choosing a page; the Bayes factor would be relevant if the existence of any difference were the scientific question, and only with a carefully justified $g_1$.
+
+## R implementation {#sec-dec-r}
+
+The interval and decision helpers are in `R/utilities/summaries.R`:
+
+```{r}
+#| file: R/utilities/summaries.R
+```
+
+`bayes_action()` minimises the Monte Carlo estimate of posterior expected loss. With the losses of @prp-bayes-estimators it reproduces the mean, the median and quantiles, a property checked in `tests/testthat/test-summaries.R`:
+
+```{r}
+#| label: dec-bayes-actions
+x <- with_seed(602, rgamma(1e5, shape = 2, rate = 1))     # a skewed "posterior"
+tau <- 0.9
+c(squared = bayes_action(x, function(a, t) (a - t)^2), mean = mean(x),
+  absolute = bayes_action(x, function(a, t) abs(a - t)), median = median(x),
+  pinball_0.9 = bayes_action(x, function(a, t) ifelse(t > a, tau * (t - a), (1 - tau) * (a - t))),
+  q_0.9 = unname(quantile(x, 0.9)))
+```
+
+## Computational experiment {#sec-dec-experiment}
+
+**Lindley's paradox.** Hold $z=1.96$ fixed, so the two-sided p-value is $0.05$, and compute @eq-lindley as $n$ grows, with $\sigma=\tau=1$:
+
+```{r}
+#| label: fig-dec-lindley
+#| fig-cap: "Bayes factor $B_{01}$ in favour of the point null when the two-sided p-value is fixed at 0.05 ($z=1.96$), as a function of sample size, for three prior scales $\\tau$ under the alternative ($\\sigma=1$). Above the dashed line the data favour $H_0$."
+#| fig-height: 3.6
+n <- 10^seq(0, 6, length.out = 100)
+B01 <- function(n, tau, z = 1.96) sqrt(1 + n * tau^2) * exp(-0.5 * z^2 * n * tau^2 / (1 + n * tau^2))
+matplot(n, sapply(c(0.1, 1, 10), function(t) B01(n, t)), log = "xy", type = "l", lty = 1, lwd = 2,
+        col = course_cols[c("blue", "orange", "aqua")], xlab = "sample size n", ylab = expression(B["01"]))
+abline(h = 1, lty = 2, col = course_muted)
+legend("topleft", legend = paste("tau =", c(0.1, 1, 10)), col = course_cols[c("blue", "orange", "aqua")],
+       lwd = 2, bty = "n", cex = 0.85)
+```
+
+**Monte Carlo error of interval endpoints.** We repeat the estimation of both 95% intervals 300 times for a right-skewed $\mathrm{Gamma}(2,1)$ "posterior" with $S=4000$ draws each, and compare the variability of the endpoints:
+
+```{r}
+#| label: dec-hpd-mcse
+set.seed(603)
+reps <- replicate(300, { x <- rgamma(4000, 2); c(credible_interval(x, 0.95), hpd_interval(x, 0.95)) })
+rbind(sd_lower = c(equal_tailed = sd(reps[1, ]), hpd = sd(reps[3, ])),
+      sd_upper = c(equal_tailed = sd(reps[2, ]), hpd = sd(reps[4, ])))
+```
+
+The HPD's lower endpoint sits where the density is steep and draws are relatively sparse, so it is noisier than the 2.5% quantile. The equal-tailed upper endpoint lies further out in the long right tail than the HPD's, so it is the noisiest of all. Neither interval is uniformly easier to estimate. What matters is how many draws fall near each endpoint, which is why tail summaries need more draws than central ones.
+
+**The uniform-location example.** We simulate @exm-uniform-location to compare unconditional coverage with posterior probability, as a function of the observed range:
+
+```{r}
+#| label: dec-uniform
+set.seed(604)
+theta <- 3; R <- 1e5
+y1 <- runif(R, theta - 0.5, theta + 0.5); y2 <- runif(R, theta - 0.5, theta + 0.5)
+lo <- pmin(y1, y2); hi <- pmax(y1, y2); r <- hi - lo
+covered <- lo <= theta & theta <= hi
+bins <- cut(r, c(0, 0.1, 0.25, 0.5, 1))
+c(overall_coverage = mean(covered))
+rbind(coverage_by_range = tapply(covered, bins, mean),
+      mean_posterior_prob = tapply(pmin(r / (1 - r), 1), bins, mean))
+```
+
+Within each range bin, the posterior probability (second row) matches the frequency with which the interval actually covers $\theta$ (first row). The unconditional 50% hides this structure completely.
+
+## Diagnostics and validation {#sec-dec-validation}
+
+- **Report the Monte Carlo error of every summary.** Means of independent draws have standard error $s/\sqrt S$, quantiles have the standard error given by `mcse_quantile()` (@sec-mixing), and tail probabilities near 0 or 1 need many draws for small *relative* error.
+- **Check Bayes actions against known answers**: the mean, median and quantiles, as in the tests.
+- **Check Bayes factors analytically where possible**, and otherwise by two independent methods (@sec-model-comparison). Report their sensitivity to the prior under each hypothesis.
+- **For HPD regions**, check unimodality before reporting a single interval (`hpd_grid()` finds disconnected regions on a grid).
+
+## Interpretation {#sec-dec-interpretation}
+
+Every summary of a posterior is an answer to an implicit decision problem. The posterior mean answers "what single number minimises expected squared error?", the HPD interval answers "what is the smallest set with 95% probability?", and a Bayes factor answers "which hypothesis predicted the data better?". Being explicit about the question avoids most misinterpretations. In applied work, reporting the full posterior (or several summaries of it) is usually better than collapsing it to one number.
+
+## Limitations and common errors {#sec-dec-errors}
+
+- **Treating $\mathbb P(\theta>0\mid y)$ as a measure of importance.** It says nothing about magnitude.
+- **Reporting the MAP as "the Bayesian estimate".** It is the Bayes estimator only under 0–1 loss, it is not invariant, and it can be unrepresentative.
+- **HPD intervals after transformation.** Compute the HPD on the scale on which it will be reported.
+- **Bayes factors with vague priors.** Arbitrary and often extreme (@prp-lindley, @exr-bayes-8). The prior under each hypothesis must be specified with as much care as the hypothesis itself.
+- **Identifying "credible" with "confidence".** They coincide only approximately, in regular models with weak priors.
+- **Decision without loss.** Thresholds such as "act if $\mathbb P(H_1\mid y)>0.95$" imply a specific loss ratio ($c_I/c_{II}=19$, by @prp-bayes-test). State it.
+
+## Chapter summary {#sec-dec-summary}
+
+- Bayesian decision theory chooses the action with the smallest posterior expected loss. Such actions minimise Bayes risk (@thm-bayes-rule).
+- Squared, absolute, quantile and 0–1 losses give the posterior mean, median, quantiles and mode (@prp-bayes-estimators).
+- Equal-tailed credible intervals transform correctly under monotone maps. HPD regions have minimal volume (@prp-hpd-shortest) but are not invariant and may be disconnected.
+- Testing uses posterior probabilities and Bayes factors (@eq-bayes-factor). Point nulls require mixed priors, and Bayes factors depend strongly on the prior under the alternative (Lindley's paradox, @prp-lindley).
+- Credible and confidence intervals answer different questions. They agree approximately in regular large-sample problems and can disagree sharply otherwise (@exm-uniform-location).
+
+## Exercises {#sec-dec-exercises}
+
+::: {#exr-dec-1}
+**[Mathematical ★]** For $\theta\mid y\sim\mathrm{Gamma}(a,b)$, compute the Bayes estimators under squared error, absolute error (numerically), 0–1 loss (limit), and the *relative* squared error $L(\theta,a)=(\theta-a)^2/\theta^2$. Order them for $a=3,b=1$.
+:::
+
+::: {#exr-dec-2}
+**[Proof ★★]** Show that under weighted squared error $L(\theta,a)=w(\theta)(\theta-a)^2$ with $w>0$, the Bayes estimator is $\mathbb E[w(\theta)\theta\mid y]/\mathbb E[w(\theta)\mid y]$, when these expectations are finite.
+:::
+
+::: {#exr-dec-3}
+**[Mathematical ★★]** For a posterior $\sigma^2\mid y\sim\mathrm{InvGamma}(5,4)$, compute the 90% HPD interval for $\sigma^2$ and for $\sigma=\sqrt{\sigma^2}$ numerically. Show that the image of the first under $\sqrt\cdot$ differs from the second, and explain why the equal-tailed intervals do not have this problem.
+:::
+
+::: {#exr-dec-4}
+**[Proof ★★]** Prove @prp-bayes-test, and show that "reject $H_0$ when $\mathbb P(H_0\mid y)<0.05$" corresponds to a loss ratio $c_I/c_{II}=19$.
+:::
+
+::: {#exr-dec-5}
+**[Mathematical ★★]** In @exm-uniform-location, derive the posterior under a flat prior and the posterior probability that $\theta\in[y_{(1)},y_{(2)}]$.
+:::
+
+::: {#exr-dec-6}
+**[R ★★]** In the A/B example, compute the Bayes factor for $H_0$ against $H_1$ as a function of the prior concentration: use $\mathrm{Beta}(c\,\bar\theta,c(1-\bar\theta))$ priors under both hypotheses with $\bar\theta=0.1$ and $c\in\{2,20,200,2000\}$. Plot $2\log B_{10}$ against $c$ and explain the shape.
+:::
+
+::: {#exr-dec-7}
+**[Simulation ★★]** For the normal model with known variance and a $\mathrm N(0,1)$ prior, $n=10$, $\sigma=1$, compute the frequentist coverage of the 95% central credible interval as a function of the true $\mu\in[-4,4]$ and plot it. Where is coverage above or below 95%, and why?
+:::
+
+::: {#exr-dec-8}
+**[Critique ★★]** A paper reports "the posterior probability of the null hypothesis is 0.31, so the data are inconclusive", using a point-null prior with $\pi_0=0.5$ and $g_1=\mathrm N(0,100^2)$ for an effect expected to be at most 1 unit. Comment on the analysis.
+:::
+
+::: {#exr-dec-9}
+**[Research ★★★]** Wald's complete class theorem says that admissible rules are (limits of) Bayes rules. Read @berger1985decision [Chapter 8] and explain, with the normal-means problem as an example, why the sample mean is admissible in one and two dimensions but not in three or more (Stein's phenomenon), and what this suggests about shrinkage priors (@sec-hierarchical) [@efron1975data].
+:::
+
+## Further reading {#sec-dec-reading}
+
+- @berger1985decision and @robert2007choice: Bayesian decision theory, admissibility, Bayes factors and the complete class theorem.
+- @kass1995bayes: the standard review of Bayes factors, including their computation and sensitivity.
+- @lindley1957statistical: the original statement of the paradox.
+- @chen1999monte and @hyndman1996computing: computing and displaying HPD regions.
+- @lehmann1998theory, Chapter 4: Bayes and minimax estimation from the frequentist perspective.
+
+## Solutions {#sec-dec-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-dec-1
+Squared error: $a/b=3$. Absolute error: `qgamma(0.5, 3, 1)` $\approx2.674$. 0–1 loss: mode $(a-1)/b=2$. Relative squared error: by @exr-dec-2 with $w=\theta^{-2}$, $\mathbb E[\theta^{-1}]/\mathbb E[\theta^{-2}]=\frac{b/(a-1)}{b^2/((a-1)(a-2))}=(a-2)/b=1$. Order: $1<2<2.674<3$. The relative loss heavily penalises overestimating small $\theta$, which pulls the estimate down.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-dec-2
+$\rho(a)=\mathbb E[w\theta^2]-2a\mathbb E[w\theta]+a^2\mathbb E[w]$ is a quadratic in $a$ with positive leading coefficient, minimised at $a=\mathbb E[w\theta\mid y]/\mathbb E[w\mid y]$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-dec-3
+```{r}
+#| eval: false
+g <- seq(0.01, 6, length.out = 60001)
+d_s2 <- exp(dinvgamma_log(g, 5, 4))
+h1 <- hpd_grid(d_s2, g, 0.9)$intervals                 # HPD for sigma^2
+d_s <- exp(dinvgamma_log(g^2, 5, 4)) * 2 * g           # density of sigma = sqrt(sigma^2)
+h2 <- hpd_grid(d_s, g, 0.9)$intervals                  # HPD for sigma
+rbind(sqrt_of_hpd_s2 = sqrt(h1), hpd_sigma = h2)
+```
+The two differ because the density of $\sigma$ includes the Jacobian $2\sigma$, which changes which points have "highest density". Quantiles transform under monotone maps ($\mathbb P(\sigma\le\sqrt q)=\mathbb P(\sigma^2\le q)$), so equal-tailed intervals are invariant.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-dec-4
+Choosing $H_1$ has expected loss $c_I\mathbb P(H_0\mid y)$ and choosing $H_0$ has $c_{II}\mathbb P(H_1\mid y)$. $H_1$ is better iff $c_I(1-p_1)<c_{II}p_1$, i.e. $p_1>c_I/(c_I+c_{II})$, with $p_1=\mathbb P(H_1\mid y)$. The rule $\mathbb P(H_0\mid y)<0.05$, i.e. $p_1>0.95$, corresponds to $c_I/(c_I+c_{II})=0.95$, i.e. $c_I=19c_{II}$: a false rejection is treated as 19 times as costly as a false acceptance.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-dec-5
+The likelihood is $\prod_i\mathbf 1\{\theta-\frac12\le y_i\le\theta+\frac12\}=\mathbf 1\{y_{(2)}-\frac12\le\theta\le y_{(1)}+\frac12\}$. With a flat prior the posterior is uniform on this interval of length $1-r$. The interval $[y_{(1)},y_{(2)}]$ intersected with the support has length $\min(r,1-r)$: if $r\le\frac12$ it lies inside the support, giving probability $r/(1-r)$; if $r>\frac12$ the support lies inside it, giving probability 1.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-dec-6
+Under $H_0$: $\log m_0=\log\binom{n_A}{y_A}+\log\binom{n_B}{y_B}+\log B(c\bar\theta+y_A+y_B,\ c(1-\bar\theta)+n_A+n_B-y_A-y_B)-\log B(c\bar\theta,c(1-\bar\theta))$. Under $H_1$: the sum of two beta-binomial log probabilities with the same prior. As $c$ grows, both priors concentrate at $0.1$, and the two hypotheses make nearly identical predictions: $B_{10}\to1$. For small $c$ the priors are diffuse, and $H_1$ is penalised for spreading its predictions over two independent rates, so $B_{10}<1$. At intermediate $c$, $B_{10}$ can exceed 1 when the prior concentrates near the observed rates, so it is not monotone in general. The shape shows that the Bayes factor is determined by the priors as much as by the data.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-dec-7
+The posterior is $\mathrm N(\frac{n\bar y}{n+1},\frac1{n+1})$. At true $\mu$, $\bar y\sim\mathrm N(\mu,1/n)$, so the coverage is
+$\mathbb P\big(\lvert\frac{n\bar y}{n+1}-\mu\rvert\le\frac{1.96}{\sqrt{n+1}}\big)=\Phi\big(\frac{1.96\sqrt{n+1}+\mu}{\sqrt n}\big)-\Phi\big(\frac{-1.96\sqrt{n+1}+\mu}{\sqrt n}\big)$, using $\frac{n\bar y}{n+1}-\mu\sim\mathrm N\big(-\frac{\mu}{n+1},\frac{n}{(n+1)^2}\big)$. Coverage exceeds 95% near $\mu=0$, where shrinkage helps, and falls below 95% for $\lvert\mu\rvert\gtrsim2$, where shrinkage biases the interval towards 0. Averaged over the $\mathrm N(0,1)$ prior it is exactly 95% (@prp-prior-coverage).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-dec-8
+With $g_1=\mathrm N(0,100^2)$, the alternative predicts effects of size $\pm100$, even though effects are expected to be at most about 1. By @prp-lindley the Bayes factor is then strongly biased towards $H_0$, roughly by a factor $100/\text{(sensible scale)}$. The value 0.31 mostly reflects an unreasonable $g_1$, not the data. Recommendations: choose $g_1$ consistent with plausible effect sizes (e.g. $\mathrm N(0,0.5^2)$), report sensitivity to $g_1$, and report the posterior distribution of the effect under the alternative alongside any test.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-dec-9
+For $X\sim\mathrm N_d(\theta,I)$ with squared error loss, the James–Stein estimator $\big(1-\frac{d-2}{\lVert X\rVert^2}\big)X$ has strictly smaller risk than $X$ for every $\theta$ when $d\ge3$, so $X$ is inadmissible. In $d\le2$, $X$ is admissible (it is a limit of Bayes rules under increasingly flat normal priors, and Blyth's method applies). James–Stein is approximately the posterior mean under a hierarchical prior $\theta_j\sim\mathrm N(0,A)$ with $A$ estimated from the data (empirical Bayes). This motivates hierarchical shrinkage priors: pooling information across many parameters improves *total* estimation accuracy [@efron1975data].
+:::

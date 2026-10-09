@@ -1,0 +1,297 @@
+# Computational Statistics and Software Engineering {#sec-engineering}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. design sampler and model interfaces that separate the statistical model from the algorithm, validate inputs, and return self-describing output;
+2. build a test suite combining deterministic unit tests, statistical tests with controlled error rates, and end-to-end validation;
+3. profile R code, identify bottlenecks, and improve performance through vectorisation, caching and algorithmic choices;
+4. generate reproducible random numbers for parallel computation;
+5. plan, run and report simulation studies and benchmarks with quantified Monte Carlo error;
+6. organise, document and package research code;
+7. distinguish software correctness from statistical correctness.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-r-computing (R, testing basics), @sec-validation (validation of samplers), @sec-mixing (efficiency and fair comparisons).
+:::
+
+## Motivation {#sec-eng-motivation}
+
+Statistical methods reach practice through software, and errors in software are errors in science. A sampler with a subtle bug, a simulation study whose random-number streams overlap, or a benchmark tuned in favour of one method all produce published conclusions that are wrong, and nothing in the output reveals it. Conversely, well-engineered code (with clear interfaces, tests that check the mathematics, recorded environments) makes results checkable and reusable [@wilson2014best; @wilson2017good]. This chapter collects the engineering practices that the rest of the book has used implicitly, and makes them explicit.
+
+## Definitions and notation {#sec-eng-definitions}
+
+::: {#def-correctness}
+## Two kinds of correctness
+Software is **correct** if it computes what its specification says, e.g. a function implements the Metropolis–Hastings acceptance rule as derived. A computation is **statistically correct** if its output supports the intended inference: the model is adequate, the sampler has converged, and the Monte Carlo error is quantified and small enough.
+:::
+
+Neither implies the other. A correct implementation of a misspecified model gives a precise answer to the wrong question. An algorithm that is valid in principle can be implemented with a bug that makes it target the wrong distribution. Tests address software correctness. Checking, diagnostics and validation (Chapters 8, 17–19) address statistical correctness.
+
+## Mathematical development {#sec-eng-development}
+
+### Interfaces that separate model from algorithm {#sec-eng-interfaces}
+
+The course code follows one design principle throughout: **a model is a set of functions; a sampler consumes those functions.** A model constructor (e.g. `logistic_regression_model(X, y)`) returns a list with `log_density`, `grad` and, where relevant, `log_lik_pointwise`, implemented as closures that capture the data. Every sampler takes a log density (and gradient) as its first arguments. Benefits:
+
+- **testability**: the model's log density and gradient can be checked against independent implementations and finite differences, and the sampler can be checked on targets with known answers, *separately*;
+- **reuse**: the same sampler runs on any model, and the same model can be given to several samplers for comparison (@sec-mix-comparisons);
+- **clarity**: the mathematical object (a density) and the algorithm (a Markov kernel) are distinct in the code, as in the theory.
+
+**Input validation** belongs at the boundary of every public function (`check_count()`, `check_spd_matrix()`, ...), with error messages that say what was expected. **Output** should describe itself: draws together with acceptance statistics, the settings used, and diagnostics such as divergences, so that a result can be interpreted without reconstructing how it was produced. The `run_chains()` function and the `"mcmc_fit"` class in `R/utilities/mcmc-fit.R` package multi-chain output with its seed, timing and a `summary()` method.
+
+### Testing statistical software {#sec-eng-testing}
+
+A test suite for statistical code has three layers:
+
+1. **Deterministic unit tests**: exact identities (normalisation of densities, closed-form posterior updates, matrix factorisations), agreement of gradients with finite differences, error handling for invalid input, and behaviour at edge cases (empty data, boundaries, extreme values).
+2. **Statistical tests**: stochastic output compared with known truth within a tolerance derived from Monte Carlo error (`expect_within_mcse()`).
+3. **End-to-end validation**: simulation-based calibration and parameter recovery (@sec-validation), run less frequently because they are expensive.
+
+Statistical tests have a false-failure rate. With tolerance $k$ standard errors and an approximately normal estimator, a correct implementation fails a single check with probability $\alpha_k=2\{1-\Phi(k)\}$, which is about $0.046$ for $k=2$, $0.0027$ for $k=3$ and $6.3\times10^{-5}$ for $k=4$.
+
+::: {#prp-suite-error}
+## False failures in a test suite
+If a suite contains $T$ independent statistical checks, each with false-failure probability $\alpha$, a correct implementation fails at least one check with probability $1-(1-\alpha)^T\le T\alpha$.
+:::
+
+::: {.proof}
+Independence gives $\mathbb P(\text{no failure})=(1-\alpha)^T$. The bound follows from Bernoulli's inequality, $(1-\alpha)^T\ge1-T\alpha$.
+:::
+
+With $T=100$ statistical checks at $k=2$, a correct implementation would fail at least once in 99% of runs, which makes the suite useless. At $k=4$ the probability is about 0.6%. Fixing seeds makes the suite deterministic: a fixed seed that passes once passes forever. But fixed seeds can also hide fragility, so the suite should occasionally be run with fresh seeds, and failures investigated rather than re-seeded away. Power matters as well. Tolerances must be tight enough, relative to the effect of plausible bugs, for the tests to detect them. Run lengths in tests should be chosen so that MCSEs are small compared with the errors that bugs would cause.
+
+### Performance: profiling, vectorisation and algorithms {#sec-eng-performance}
+
+Optimise only what is measured to be slow. **Profiling** (`Rprof()` with `summaryRprof()`, or the `profvis` package) records where time is spent. In MCMC the cost is usually dominated by evaluating the log density and gradient, so improvements there pay off directly. Effective techniques, roughly in order of impact:
+
+1. **Better algorithms**: a sampler with 10 times the ESS per evaluation beats any micro-optimisation (Chapters 15–16, 21).
+2. **Avoid repeated work**: compute quantities shared by the log density and the gradient once (for GLMs, the linear predictor $X\beta$), and precompute data-only quantities such as $X^\top X$ and $X^\top y$ outside the sampler loop.
+3. **Vectorise inner computations** (@sec-r-cost), and use efficient linear algebra: Cholesky solves, `crossprod()`.
+4. **Compiled code** (Rcpp) for unavoidable scalar loops, or a probabilistic programming language such as Stan, which compiles the model to C++ with automatic differentiation [@carpenter2017stan].
+
+The cost per iteration should be stated in terms of the problem size: $O(np)$ for a GLM log density with $n$ observations and $p$ predictors, $O(d^3)$ for a dense Cholesky factorisation, $O(n)$ for a Kalman filter.
+
+### Random numbers in parallel {#sec-eng-rng}
+
+Parallel chains and parallel simulation replications need **independent** random-number streams. Seeding worker $m$ with `set.seed(m)` gives streams whose independence is not guaranteed. The L'Ecuyer-CMRG generator provides streams separated by $2^{127}$ steps, with `parallel::nextRNGStream()` advancing from one to the next [@lecuyer2002object]. `run_chains()` assigns the $m$-th stream to chain $m$ *before* dispatching work, so its results are identical whether the chains run sequentially or in parallel, and on any number of cores. That is the property that makes parallel results reproducible.
+
+### Simulation studies and benchmarks {#sec-eng-simulation}
+
+A simulation study is an experiment, and should be designed and reported like one. @morris2019using propose the **ADEMP** structure:
+
+- **Aims**: what question the study answers;
+- **Data-generating mechanisms**: the simulated scenarios, chosen to span realistic and challenging cases;
+- **Estimands**: the targets of inference;
+- **Methods**: the procedures compared, with all settings;
+- **Performance measures**: bias, root-mean-square error, interval coverage, interval width, ESS per second, each **with its Monte Carlo standard error** [@koehler2009assessment].
+
+For example, the MCSE of an estimated coverage $\hat c$ from $R$ replications is $\sqrt{\hat c(1-\hat c)/R}$, so about 1000 replications are needed to estimate 95% coverage to within $\pm1.4$ percentage points (two MCSEs). Benchmarks of samplers add the fairness requirements of @sec-mix-comparisons: comparable tuning, all costs counted, correctness checked, replication over seeds, and the hardware and software environment reported.
+
+### Reproducibility, documentation and packaging {#sec-eng-reproducibility}
+
+A reproducible project keeps raw data unmodified, scripts every transformation, records package versions (`sessionInfo()`, `renv` lockfiles), sets seeds once at the top level, and uses version control [@sandve2013ten; @peng2011reproducible; @marwick2018packaging]. Functions are documented where they are defined: purpose, arguments, return value, assumptions and complexity. Roxygen-style comments (`#' @param ...`), as used throughout `R/`, can be turned into help pages. When code is reused across projects, an R package is the natural container, with `R/` for functions, `tests/testthat/` for tests, `DESCRIPTION` for dependencies, and vignettes for worked examples [@wickham2023packages]. This book's repository has the same structure, and could be converted into a package with little effort.
+
+## Worked example: profiling and improving an HMC fit {#sec-eng-worked}
+
+We profile HMC on a logistic regression with $n=5000$ observations and $p=10$ predictors.
+
+```{r}
+#| label: eng-profile
+set.seed(2601)
+n <- 5000; p <- 10
+X <- cbind(1, matrix(rnorm(n * (p - 1)), n)); y <- rbinom(n, 1, inv_logit(X %*% rnorm(p, 0, 0.5)))
+m <- logistic_regression_model(X, y, prior_sd = 2.5)
+prof_file <- tempfile()
+Rprof(prof_file, interval = 0.005)
+fit <- hmc_sampler(m$log_density, m$grad, rep(0, p), 300, step_size = 0.02, n_steps = 10)
+Rprof(NULL)
+prof <- summaryRprof(prof_file)
+head(prof$by.self[, c("self.time", "self.pct")], 6)
+```
+
+The `by.self` table attributes time to the function actually executing. Almost all of it is spent on three operations inside the gradient and log density: the logistic function (`plogis`), the matrix–vector product $X\beta$ (`%*%`), and $X^\top r$ (`crossprod`). The sampler's own bookkeeping (`leapfrog`) is negligible. Profiles are themselves noisy, so rerunning gives slightly different percentages, but the ranking is stable. Two improvements follow:
+
+1. *Fuse the computations*: each leapfrog step needs only the gradient, and the log density is evaluated once per iteration, but each computes $X\beta$ separately. A combined function that returns both values and shares $X\beta$ removes about a third of the work for models whose density and gradient are always needed together.
+2. *Precondition*: with a diagonal mass matrix from a Laplace approximation, a much larger step size is stable, so fewer gradient evaluations are needed per effective draw (@sec-hmc-tuning). This is the larger gain.
+
+```{r}
+#| label: eng-improve
+hess <- function(b) { pr <- inv_logit(as.vector(X %*% b)); -crossprod(X * (pr * (1 - pr)), X) - diag(1 / 2.5^2, p) }
+la <- laplace_approximation(m$log_density, m$grad, hess, rep(0, p))
+t_plain <- timed(hmc_sampler(m$log_density, m$grad, la$mode, 500, step_size = 0.02, n_steps = 10))
+t_pre <- timed(hmc_sampler(m$log_density, m$grad, la$mode, 500, step_size = 0.6, n_steps = 4, inv_mass = diag(la$cov)))
+rbind(efficiency_row(t_plain$value$draws[, 2], t_plain$seconds, 500 * 10, "HMC, M = I, eps = 0.02"),
+      efficiency_row(t_pre$value$draws[, 2], t_pre$seconds, 500 * 4, "HMC, Laplace mass matrix")) |>
+  transform(ess_bulk = round(ess_bulk), ess_per_sec = round(ess_per_sec), ess_per_1000_evals = round(ess_per_1000_evals))
+```
+
+The preconditioned sampler uses fewer gradient evaluations per iteration (4 rather than 10) yet achieves roughly nine times the bulk ESS for $\beta_1$. The result is about twenty times as many effective draws per gradient evaluation and per second. That is far more than any micro-optimisation of the gradient code could deliver, since the profile shows the gradient is already dominated by vectorised built-in operations.
+
+## R implementation {#sec-eng-r}
+
+```{r}
+#| file: R/utilities/mcmc-fit.R
+```
+
+```{r}
+#| label: eng-run-chains
+tg <- target_correlated_gaussian(0.9)
+sampler <- function(m) {
+  out <- hmc_sampler(tg$log_density, tg$grad, c(0, 0), 1000, 0.3, 10)
+  colnames(out$draws) <- c("x1", "x2"); out$draws
+}
+fit1 <- run_chains(sampler, n_chains = 4, seed = 42)
+fit2 <- run_chains(sampler, n_chains = 4, seed = 42, cores = 2)
+fit1
+c(identical_sequential_vs_parallel = identical(fit1$draws, fit2$draws))
+```
+
+The results are identical with one or two cores, because each chain's random-number stream is fixed before the work is distributed. (The bulk ESS exceeds the 4000 draws because HMC with these settings produces negatively correlated successive draws for this Gaussian target, as in @sec-hmc-experiment.)
+
+## Computational experiment: error rates of statistical tests {#sec-eng-experiment}
+
+We apply a "within $k$ MCSEs" test to the mean of 1000 independent $\mathrm N(0,1)$ draws (a correct "sampler") 20 000 times, for $k=2,3,4$, and compare the empirical false-failure rates with $\alpha_k$:
+
+```{r}
+#| label: eng-false-failures
+set.seed(2602)
+z <- replicate(20000, { x <- rnorm(1000); mean(x) / (sd(x) / sqrt(1000)) })
+rbind(empirical = sapply(2:4, function(k) mean(abs(z) > k)), theoretical = 2 * pnorm(-(2:4)),
+      suite_of_100_any_fail = 1 - (1 - 2 * pnorm(-(2:4)))^100) |> `colnames<-`(paste0("k=", 2:4)) |> signif(3)
+```
+
+**A simulation study in ADEMP form.** *Aim*: compare the frequentist coverage of the Jeffreys credible interval and the Wald confidence interval for a binomial proportion with $n=30$. *Data-generating mechanisms*: $\theta\in\{0.02,0.1,0.3,0.5\}$. *Estimand*: $\theta$. *Methods*: equal-tailed 95% Jeffreys interval (posterior under $\mathrm{Beta}(\frac12,\frac12)$) and the Wald interval $\hat\theta\pm1.96\sqrt{\hat\theta(1-\hat\theta)/n}$. *Performance*: coverage and mean width, with MCSEs, from $R=4000$ replications.
+
+```{r}
+#| label: eng-ademp
+set.seed(2603)
+R <- 4000; nobs <- 30
+res <- do.call(rbind, lapply(c(0.02, 0.1, 0.3, 0.5), function(th) {
+  yy <- rbinom(R, nobs, th); ph <- yy / nobs
+  jl <- qbeta(0.025, yy + 0.5, nobs - yy + 0.5); ju <- qbeta(0.975, yy + 0.5, nobs - yy + 0.5)
+  wl <- ph - 1.96 * sqrt(ph * (1 - ph) / nobs); wu <- ph + 1.96 * sqrt(ph * (1 - ph) / nobs)
+  cj <- mean(jl <= th & th <= ju); cw <- mean(wl <= th & th <= wu)
+  data.frame(theta = th, cover_jeffreys = cj, mcse_j = sqrt(cj * (1 - cj) / R), width_jeffreys = mean(ju - jl),
+             cover_wald = cw, mcse_w = sqrt(cw * (1 - cw) / R), width_wald = mean(wu - wl))
+}))
+round(res, 3)
+```
+
+The Jeffreys interval keeps coverage between about 93% and 98% across $\theta$. The Wald interval collapses near the boundary: at $\theta=0.02$ its coverage is about 45%, because it degenerates to the single point $\{0\}$ whenever $y=0$, which happens with probability $0.98^{30}\approx0.55$. At $\theta=0.3$ and $0.5$ the two methods are indistinguishable. Every coverage estimate carries an MCSE of at most 0.008, so differences smaller than about two MCSEs ($\approx0.015$) should not be interpreted. The experiment also illustrates the empirical false-failure rates. For $k=2$ and $k=3$ they match $\alpha_k$ to within Monte Carlo error. For $k=4$ the expected count in 20 000 trials is only about 1.3, so the observed $10^{-4}$ (two failures) is consistent with $\alpha_4$, and a suite of 100 such checks has a false-failure probability of about 0.6%.
+
+## Diagnostics and validation {#sec-eng-validation}
+
+- Run the full test suite (`Rscript tests/run-tests.R`) on every change. Continuous integration (`.github/workflows/publish.yml`) runs it on every push.
+- Run statistical tests with fresh seeds periodically. Treat any failure as a potential bug until shown otherwise.
+- Profile before optimising, and re-validate after optimising: performance changes are a common source of bugs.
+- For simulation studies, check the data-generating code itself (does it produce data with the intended properties?), and report MCSEs of all performance measures.
+
+## Interpretation {#sec-eng-interpretation}
+
+Engineering practice is what turns a correct algorithm on paper into a trustworthy computation. The separation of model and sampler, layered testing with controlled error rates, reproducible random-number streams and honest benchmarking are not optional extras for computational statistics: they are how its results become checkable.
+
+## Limitations and common errors {#sec-eng-errors}
+
+- **Monolithic scripts** that mix data handling, model, sampler and plotting, which makes components untestable.
+- **Tests with arbitrary tolerances**, which are either flaky or blind (@prp-suite-error).
+- **Re-seeding a failing statistical test until it passes.**
+- **Parallel streams from `set.seed(m)` per worker**, with no guarantee of independence.
+- **Optimising code before profiling**, or before choosing a better algorithm.
+- **Simulation studies without Monte Carlo standard errors**, or with too few replications to distinguish the methods.
+- **Benchmarks without environment details** or with asymmetric tuning effort.
+- **Confusing software correctness with statistical correctness** (@def-correctness).
+
+## Chapter summary {#sec-eng-summary}
+
+- Separate models (log density, gradient, pointwise log-likelihood) from samplers, validate inputs, and return self-describing output.
+- Test in layers: deterministic unit tests, statistical tests with MCSE-based tolerances whose suite-wide false-failure rate is controlled (@prp-suite-error), and end-to-end validation.
+- Profile, then improve algorithms first and code second.
+- Use independent, pre-assigned random-number streams for parallel work, so that results do not depend on the number of cores.
+- Design simulation studies with ADEMP and report MCSEs of all performance measures. Benchmark fairly and report the environment.
+- Software correctness and statistical correctness are distinct, and both must be established.
+
+## Exercises {#sec-eng-exercises}
+
+::: {#exr-eng-1}
+**[R ★★]** Write a `value_and_grad` version of `logistic_regression_model()` that computes $X\beta$ once and returns both the log density and the gradient. Modify a copy of `hmc_sampler()` to use it, and measure the speed-up.
+:::
+
+::: {#exr-eng-2}
+**[Mathematical ★]** A test suite has 120 statistical checks with $k=3$. Compute the probability that a correct implementation fails at least one, and the $k$ needed for this probability to be below 1%.
+:::
+
+::: {#exr-eng-3}
+**[R ★★]** Using `run_chains()`, run four chains of the eight-schools non-centred Gibbs sampler with 1, 2 and 4 cores, and verify that the draws are identical. Then replace the L'Ecuyer streams with `set.seed(m)` inside each chain, and discuss what guarantee is lost.
+:::
+
+::: {#exr-eng-4}
+**[Simulation ★★]** Design an ADEMP simulation study comparing the bias and MSE of the posterior mean and the posterior median of $\tau$ in the eight-schools model, using `eight_schools_exact()` and data generated from the model with $\tau\in\{0,2,5,10\}$. Report all performance measures with MCSEs.
+:::
+
+::: {#exr-eng-5}
+**[Critique ★★]** Review the course function `metropolis_hastings()` as a piece of software: identify one design decision you would change for a production package, and one test you would add.
+:::
+
+::: {#exr-eng-6}
+**[Research ★★★]** Convert the course's `R/` directory into an installable R package with `DESCRIPTION`, `NAMESPACE`, roxygen documentation and the existing tests, following @wickham2023packages. Run `R CMD check` and resolve the issues it reports.
+:::
+
+## Further reading {#sec-eng-reading}
+
+- @wilson2014best and @wilson2017good: practices for scientific computing.
+- @wickham2023packages and @wickham2019advanced: R packages and advanced R programming.
+- @wickham2011testthat: testing R code.
+- @morris2019using and @koehler2009assessment: designing simulation studies and reporting Monte Carlo error.
+- @lecuyer2002object: random-number streams for parallel computation.
+- @sandve2013ten, @peng2011reproducible and @marwick2018packaging: reproducible research.
+
+## Solutions {#sec-eng-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-eng-1
+```{r}
+#| eval: false
+value_and_grad <- function(beta) {
+  eta <- as.vector(X %*% beta); p <- inv_logit(eta)
+  list(value = sum(y * log_inv_logit(eta) + (1 - y) * log1m_inv_logit(eta)) + sum(dnorm(beta, 0, 2.5, log = TRUE)),
+       grad = as.vector(crossprod(X, y - p)) - beta / 2.5^2)
+}
+```
+In HMC, the gradient is needed at every leapfrog step and the value only at the endpoints. The saving is the duplicated $X\beta$ at the endpoint (about one $O(np)$ product per iteration), plus shared intermediate quantities. Expect a modest speed-up (10–30%), much smaller than that from preconditioning.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-eng-2
+$\alpha_3=0.0027$, so $1-(1-0.0027)^{120}\approx0.28$. For a suite-wide rate below 1% we need $\alpha<1-0.99^{1/120}\approx8.4\times10^{-5}$, i.e. $k\approx3.93$, so $k=4$ suffices.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-eng-3
+The draws are identical across core counts because each chain's stream is assigned from the seed before dispatch. With `set.seed(m)` inside each chain, results are reproducible but the chains' streams are not guaranteed to be independent or non-overlapping, since Mersenne-Twister seeds are hashed to states without a separation guarantee. In practice overlap is unlikely, but the guarantee is lost, and with very many workers or long runs the risk is real.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-eng-4
+Aim: compare point estimators of $\tau$. DGM: $\theta_j\sim\mathrm N(8,\tau^2)$, $y_j\sim\mathrm N(\theta_j,\sigma_j^2)$ with the real $\sigma_j$, $\tau\in\{0,2,5,10\}$. Estimand: $\tau$. Methods: posterior mean and posterior median under the half-normal(5) prior, via `eight_schools_exact(..., y = y_sim)`. Performance: bias, MSE, and their MCSEs from $R=500$ replications, e.g. $\mathrm{MCSE}(\widehat{\text{bias}})=\operatorname{sd}(\hat\tau-\tau)/\sqrt R$. Expect both estimators to be biased upwards at $\tau=0$ (the posterior cannot put all its mass at 0) and downwards at $\tau=10$ (shrinkage from the prior). The median has the smaller MSE when $\tau$ is small, because the posterior of $\tau$ is right-skewed.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-eng-5
+Design change: return an object of class `"mcmc_chain"` with print, summary and diagnostics methods, and allow a proposal covariance and multiple chains through a common interface, as in `run_chains()`. Test to add: a check that, for a target with a known boundary and an asymmetric proposal, omitting the Hastings correction is *detected* (a "mutation test" of the test suite itself). Another useful test checks that `NA` returned by the log target is handled the same way as `NaN`.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-eng-6
+Move `R/*/*.R` into the package's `R/` (flat), add a `DESCRIPTION` with `Imports: stats, graphics, grDevices, utils, parallel` and `Suggests: testthat, posterior, coda, loo`, generate `NAMESPACE` and help pages with `roxygen2::roxygenise()` (adding `@export` tags), move the tests into `tests/testthat/` with a `tests/testthat.R` runner, and run `R CMD check`. Typical issues: undeclared global variables in closures, missing documentation for exported functions, and examples that are too slow for CRAN.
+:::

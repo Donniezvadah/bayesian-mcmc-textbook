@@ -1,0 +1,54 @@
+# Checkpoint V: Convergence, Diagnostics, and Reliability {#sec-checkpoint-5 .unnumbered}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+This checkpoint covers Chapters 17–19. It focuses on the judgement needed to decide whether MCMC output can be trusted, and on the validation work that makes that judgement defensible. Suggested time: four to six hours.
+
+## Problems {#sec-cp5-problems}
+
+**Problem 1 (reading diagnostics, ★★).** Four chains for a variance parameter $\tau$ give: rank-normalised $\widehat R=1.006$, bulk-ESS 1850, tail-ESS 92, MCSE of the mean 0.004 (posterior sd 0.41), and 11 divergent transitions out of 4000, all at $\tau<0.1$. Write a short paragraph on what can and cannot be reported, and what you would do next.
+
+**Problem 2 (asymptotic variance, ★★).** For the two-state chain with $a=0.1$, $b=0.3$ and $f=\mathbf 1\{X=2\}$, compute $\sigma_f^2$ exactly, then estimate it from a simulated chain of length $10^5$ by batch means (with $b=\sqrt N$), by Geyer's initial monotone sequence and by an AR fit. Which is closest, and why?
+
+**Problem 3 (SBC design, ★★★).** Design and run an SBC study for the Gamma–Poisson model with exposures (@prp-gamma-poisson), using random-walk Metropolis on $\log\lambda$ as the sampler. Report the rank histogram, the uniformity test, and the thinning you needed. Then introduce the bug "forget to multiply the rate by the exposure in the likelihood" and show that SBC detects it.
+
+**Problem 4 (thinning, ★★).** A colleague thins an HMC chain by 10 "to reduce autocorrelation" and then reports MCSEs as $s/\sqrt{N_{\text{thinned}}}$. Using @prp-thinning, explain what is wrong with the reasoning and with the reported error, and compute the correct MCSE from the unthinned output for an example of your choice.
+
+**Problem 5 (multimodality, ★★).** For the target $\pi(x)\propto\exp\{-(x^2-4)^2/2\}$ on $\mathbb R$ (two modes at $\pm2$), design a validation procedure that would detect a sampler that visits only one mode. Implement it for random-walk Metropolis with proposal sd 0.5 started at $x_0=2$.
+
+**Problem 6 (critique, ★★).** Evaluate this methods section: "MCMC convergence was assessed visually using trace plots and confirmed with the Gelman–Rubin statistic (all below 1.05). We thinned by 20 and retained 1000 draws per chain for inference."
+
+## Solutions {#sec-cp5-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 1
+The posterior mean of $\tau$ is estimated precisely (MCSE 0.004 against posterior sd 0.41), and $\widehat R$ and bulk-ESS raise no concern for the centre of the distribution. But the tail-ESS of 92 is below the recommended 400, so lower-tail quantiles and intervals for $\tau$ are unreliable. The divergences at $\tau<0.1$ point to a funnel geometry whose neck is under-explored, so the lower tail may also be *biased*, not just imprecise. Next steps: reparameterise (non-centred), refit, check that the divergences disappear and the tail-ESS rises, and compare the lower quantiles of $\tau$ between the two fits.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 2
+$\pi=(0.75,0.25)$, $\gamma_0=0.1875$, $\lambda_2=1-a-b=0.6$, $\rho_k=0.6^k$, so $\tau_f=1.6/0.4=4$ and $\sigma_f^2=0.75$. All three estimators should be within about 5–10% of 0.75 for $N=10^5$. The AR estimator is typically closest, because the indicator of a two-state chain has exactly geometric autocorrelations, which a low-order AR model captures. Batch means has the largest sampling variability.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 3
+Draw $\lambda^\ast\sim\mathrm{Gamma}(a,b)$, exposures $t_i$ fixed, $y_i\sim\mathrm{Poisson}(\lambda^\ast t_i)$. Run RWM on $\eta=\log\lambda$ with log target $\sum_i\{y_i(\eta+\log t_i)-t_ie^\eta\}+a\eta-be^\eta$ (Gamma prior in $\lambda$ plus the log-Jacobian $\eta$, which combine to $a\eta$). Thin to about $\tau$ (often 3–5) and take $L=99$. With the bug (likelihood $\mathrm{Poisson}(\lambda)$ instead of $\mathrm{Poisson}(\lambda t_i)$), the posterior centres on the wrong value whenever the exposures differ from 1. The ranks are strongly sloped (direction depending on whether exposures exceed 1), and the uniformity test rejects decisively.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 4
+Thinning cannot reduce the variance of the full-chain average (@prp-thinning), so it does not improve accuracy. It discards information. The reported MCSE $s/\sqrt{N_{\text{thinned}}}$ assumes the thinned draws are independent. If the thinned chain still has autocorrelation (likely, if the original $\tau$ exceeded 10), the MCSE is too small. Correct approach: compute `mcse_mean()` on the *unthinned* output, which accounts for autocorrelation and uses all draws. For an AR(1) chain with $\phi=0.95$, $N=20\,000$, and thinning by 10, the thinned draws have lag-1 autocorrelation $0.95^{10}\approx0.6$, so $s/\sqrt{2000}$ understates the error by about a factor $\sqrt{(1+0.6)/(1-0.6)}=2$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 5
+The target is symmetric, so $\mathbb P(x>0)=\frac12$ exactly. A validation procedure: run at least four chains from dispersed starts (e.g. $\pm3$, $\pm0.5$) and compare per-chain estimates of $\mathbb P(x>0)$; compute rank-normalised $\widehat R$ for $x$; test the pooled estimate of $\mathbb P(x>0)$ against $\frac12$ using its MCSE. RWM with sd 0.5 started at $2$ stays near the right mode for long periods (the barrier at 0 has relative density $e^{-8}$): a single chain gives $\mathbb P(x>0)\approx1$, multiple chains disagree ($\widehat R\gg1$), and the known-answer test fails. Using a known symmetry as a test is a cheap and powerful validation device.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to Problem 6
+Issues: visual assessment is subjective and does not scale. "Confirmed" overstates what diagnostics can do. The 1.05 threshold is too lax, and the statistic should be the rank-normalised split version, below 1.01. Thinning by 20 discards information (and if done to save memory, the ESS and MCSEs must still be computed properly). No ESS, tail-ESS or MCSE is reported, nor the number of chains, the starting points, the warm-up, or sampler-specific warnings. Improved version: report the number of chains, initialisation, warm-up and retained iterations, rank-normalised $\widehat R<1.01$, bulk- and tail-ESS, MCSEs for all reported summaries, divergences (if HMC), and any validation performed.
+:::

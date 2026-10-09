@@ -1,0 +1,397 @@
+# Bayesian Regression {#sec-regression}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. derive the conjugate posterior and predictive distributions of the normal linear model, and show how they reduce to classical least-squares results in a limit;
+2. fit logistic and Poisson regression models by MCMC, with priors on interpretable, standardised scales;
+3. interpret posterior distributions of coefficients, odds ratios and rate ratios, and compute posterior predictive quantities such as predicted probabilities and average predictive comparisons;
+4. check regression models with posterior predictive checks, calibration and residual analysis;
+5. compare Bayesian and frequentist estimates, and explain when and why they differ.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-conjugate (Normal–Inverse-Gamma), @sec-priors (weakly informative priors, ridge equivalence), @sec-prediction (predictive checks), @sec-hmc (HMC), and @sec-math-gradients (logistic derivatives).
+:::
+
+## Motivation {#sec-reg-motivation}
+
+Regression is the most used statistical model, and the Bayesian version brings three things to it: probability statements about coefficients and predictions that need no asymptotic approximation, regularisation through priors when data are sparse or predictors many, and a natural treatment of predictive uncertainty. This chapter fits linear, logistic and Poisson regression to real data, compares the results with the familiar `lm()` and `glm()` output, and shows how to check whether the models are adequate.
+
+## Definitions and notation {#sec-reg-definitions}
+
+Observations $(y_i,x_i)$, $i=1,\dots,n$, with $x_i\in\mathbb R^p$ (first component 1 for the intercept) and design matrix $X$ ($n\times p$, rows $x_i^\top$). A **generalised linear model** specifies $y_i\mid\beta\sim F(\mu_i)$ independently, with $g(\mu_i)=\eta_i=x_i^\top\beta$ for a link function $g$:
+
+| Model | Distribution | Link | Coefficient interpretation |
+|:--|:--|:--|:--|
+| linear | $\mathrm N(\mu_i,\sigma^2)$ | identity | change in mean per unit change in $x_j$ |
+| logistic | $\mathrm{Bernoulli}(\mu_i)$ | logit | $e^{\beta_j}$ is an odds ratio |
+| Poisson | $\mathrm{Poisson}(\mu_i)$ | log | $e^{\beta_j}$ is a rate ratio |
+
+All interpretations are *conditional on the other predictors in the model* and are associations, not causal effects, unless the design justifies a causal reading.
+
+## Mathematical development {#sec-reg-development}
+
+### The normal linear model {#sec-reg-linear}
+
+Take the conjugate prior $\beta\mid\sigma^2\sim\mathrm N_p(m_0,\sigma^2V_0)$, $\sigma^2\sim\mathrm{InvGamma}(a_0,b_0)$: the regression version of @thm-nig.
+
+::: {#thm-bayes-linear}
+## Conjugate Bayesian linear regression
+With $y\mid\beta,\sigma^2\sim\mathrm N_n(X\beta,\sigma^2I)$ and the prior above, the posterior is $\beta\mid\sigma^2,y\sim\mathrm N_p(m_n,\sigma^2V_n)$ and $\sigma^2\mid y\sim\mathrm{InvGamma}(a_n,b_n)$, where
+$$
+V_n=(V_0^{-1}+X^\top X)^{-1},\quad m_n=V_n(V_0^{-1}m_0+X^\top y),\quad a_n=a_0+\tfrac n2,\quad b_n=b_0+\tfrac12\big(y^\top y+m_0^\top V_0^{-1}m_0-m_n^\top V_n^{-1}m_n\big).
+$$
+Marginally $\beta\mid y\sim t_{2a_n}\big(m_n,\frac{b_n}{a_n}V_n\big)$, a multivariate $t$, and the predictive distribution of a new response at $\tilde x$ is $t_{2a_n}\big(\tilde x^\top m_n,\ \frac{b_n}{a_n}(1+\tilde x^\top V_n\tilde x)\big)$.
+:::
+
+::: {.proof}
+The log posterior, as a function of $(\beta,\sigma^2)$, is
+$-\frac{n+p}2\log\sigma^2-\frac1{2\sigma^2}\big[\lVert y-X\beta\rVert^2+(\beta-m_0)^\top V_0^{-1}(\beta-m_0)\big]-(a_0+1)\log\sigma^2-\frac{b_0}{\sigma^2}$.
+Expanding and completing the square in $\beta$,
+$\lVert y-X\beta\rVert^2+(\beta-m_0)^\top V_0^{-1}(\beta-m_0)=(\beta-m_n)^\top V_n^{-1}(\beta-m_n)+y^\top y+m_0^\top V_0^{-1}m_0-m_n^\top V_n^{-1}m_n$,
+since the quadratic term is $\beta^\top(X^\top X+V_0^{-1})\beta=\beta^\top V_n^{-1}\beta$ and the linear term is $-2\beta^\top(X^\top y+V_0^{-1}m_0)=-2\beta^\top V_n^{-1}m_n$. The $\beta$-dependent part is the kernel of $\mathrm N(m_n,\sigma^2V_n)$, which also absorbs $(\sigma^2)^{-p/2}$. What remains is $(\sigma^2)^{-a_0-n/2-1}e^{-b_n/\sigma^2}$, an $\mathrm{InvGamma}(a_n,b_n)$ kernel. The marginal $t$ distributions follow by integrating $\sigma^2$ out, exactly as in the proof of @thm-nig, using $\tilde y=\tilde x^\top\beta+\varepsilon$ for the predictive.
+:::
+
+::: {#prp-flat-limit}
+## The classical limit
+Let $X$ have full column rank $p<n$, let $\hat\beta=(X^\top X)^{-1}X^\top y$, and let $s^2=\lVert y-X\hat\beta\rVert^2/(n-p)$. In the limit $V_0^{-1}\to0$, $a_0=-p/2$, $b_0=0$ (the improper prior $\pi(\beta,\sigma^2)\propto1/\sigma^2$), the marginal posterior is $\beta\mid y\sim t_{n-p}\big(\hat\beta,\ s^2(X^\top X)^{-1}\big)$. Central credible intervals for each $\beta_j$ then coincide exactly with classical $t$ confidence intervals.
+:::
+
+::: {.proof}
+With $V_0^{-1}=0$: $V_n=(X^\top X)^{-1}$, $m_n=\hat\beta$, and $b_n=\frac12(y^\top y-\hat\beta^\top X^\top X\hat\beta)=\frac12\lVert y-X\hat\beta\rVert^2$. With $a_0=-p/2$, $a_n=(n-p)/2$, so $2a_n=n-p$ and $b_n/a_n=s^2$.
+:::
+
+Bayesian and frequentist linear regression therefore agree exactly under one particular improper prior, and approximately whenever the prior is weak relative to the data. They differ when the prior is informative, when $p$ is large relative to $n$ (where the prior regularises, @prp-ridge), and in what they claim: a 95% credible interval is a probability statement about $\beta_j$ given these data.
+
+### Logistic and Poisson regression {#sec-reg-glm}
+
+For non-normal likelihoods there is no conjugate prior on $\beta$, and the posterior is computed by MCMC (HMC here, using the analytic gradients of `logistic_regression_model()` and `poisson_regression_model()`) or approximated by the Laplace method (@sec-math-laplace). The log posteriors with Gaussian priors are strictly concave (@prp-logistic-concave, @exr-math-1), so they are unimodal. That is good news for samplers, though not a guarantee of good mixing when predictors are strongly correlated.
+
+**Priors on standardised scales.** A coefficient's scale depends on its predictor's units. Before choosing priors, centre continuous predictors and scale them to standard deviation 1 (some authors use 0.5 [@gelman2008weakly]), and code binary predictors as 0/1 or centred. Then independent $\mathrm N(0,2.5^2)$ priors on the coefficients are weakly informative. On the logit scale, a coefficient of 2.5 per standard deviation is an odds ratio of about 12, a large effect, so the prior allows large effects but rules out the absurd. The intercept gets a wider prior. @exm-logistic-prior-predictive showed what "vague" $\mathrm N(0,10^2)$ priors imply on the probability scale.
+
+**Separation.** If a predictor (or combination) perfectly separates the 0 and 1 outcomes, the maximum likelihood estimate does not exist (it diverges to $\pm\infty$), and `glm()` warns about fitted probabilities of 0 or 1. With a proper prior the posterior remains proper and the estimate remains finite. The prior is then doing real work, and its choice must be justified.
+
+**Overdispersion.** The Poisson model forces $\operatorname{Var}(y_i\mid\beta)=\mu_i$. Count data are usually more variable than this. This is detectable by posterior predictive checks (@sec-prediction) and addressed by negative-binomial likelihoods or observation-level random effects (@sec-hierarchical).
+
+### Posterior predictive quantities {#sec-reg-predictive}
+
+Posterior draws of $\beta$ (and $\sigma$) give draws of any derived quantity:
+
+- **predicted means** at a covariate profile $\tilde x$: $\mu(\tilde x)=g^{-1}(\tilde x^\top\beta^{(s)})$, whose distribution expresses uncertainty about the *mean* response;
+- **predicted outcomes**: $\tilde y^{(s)}\sim F(\mu^{(s)}(\tilde x))$, which adds sampling variability (@eq-pred-variance);
+- **average predictive comparisons**: for a binary predictor $x_j$, the average over the observed covariate rows of $g^{-1}(x_{i,-j},x_j=1)-g^{-1}(x_{i,-j},x_j=0)$, computed for each posterior draw. This summarises an association on the scale of the outcome (a difference in probabilities), which is more interpretable than a log odds ratio [@gelman2020regression].
+
+### Model checking for regression {#sec-reg-checking}
+
+- **Posterior predictive checks** with test quantities aimed at the model's assumptions: the residual variance by group (for the linear model), the variance-to-mean ratio (Poisson), and the number of successes by covariate pattern (logistic).
+- **Residual analysis**: plot posterior mean residuals $y_i-\mathbb E[\mu_i\mid y]$ (or standardised versions) against fitted values and against each predictor, looking for curvature and heteroscedasticity.
+- **Calibration** (binary outcomes): group observations by predicted probability and compare the observed frequency of $y=1$ in each group with the predicted probability, with posterior intervals.
+- **Influence**: observations whose deletion changes the posterior substantially can be found cheaply by importance reweighting (@sec-is-vs-mcmc) and Pareto diagnostics (@sec-model-comparison).
+
+## Worked example 1: birth weight, linear regression {#sec-reg-worked-linear}
+
+The `birthwt` data [@hosmer1989applied; @venables2002modern] record birth weight and maternal characteristics for 189 births at Baystate Medical Center (Springfield, Massachusetts) in 1986. We model birth weight in kilograms using mother's age and weight (standardised), smoking during pregnancy, history of hypertension, uterine irritability, previous premature labour, and the recorded race category (as an adjustment variable). This is an observational data set, so the coefficients describe conditional associations in this sample and are not causal effects.
+
+```{r}
+#| label: reg-data
+bw <- MASS::birthwt
+std <- function(v) (v - mean(v)) / sd(v)
+Xd <- with(bw, data.frame(intercept = 1, age = std(age), lwt = std(lwt), smoke = smoke,
+                          ht = ht, ui = ui, ptd = as.numeric(ptl > 0),
+                          race_black = as.numeric(race == 2), race_other = as.numeric(race == 3)))
+X <- as.matrix(Xd); y_kg <- bw$bwt / 1000
+dim(X); summary(y_kg)
+```
+
+**Prior.** The conjugate prior with $m_0=(3,0,\dots,0)$, $V_0=\operatorname{diag}(10^2,1,\dots,1)$ in units of $\sigma^2$, and $\sigma^2\sim\mathrm{InvGamma}(2,0.5)$ (prior mean 0.5 kg², i.e. a residual sd of about 0.7 kg). Since $\beta\mid\sigma^2\sim\mathrm N(0,\sigma^2)$ for each slope, the prior says that one standard deviation of a predictor is unlikely to shift mean birth weight by more than about $2\sigma\approx1.4$ kg, which is weak.
+
+```{r}
+#| label: reg-linear-fit
+p <- ncol(X)
+fit <- conjugate_linear_regression(X, y_kg, m0 = c(3, rep(0, p - 1)), V0 = diag(c(100, rep(1, p - 1))), a0 = 2, b0 = 0.5)
+set.seed(2001)
+draws <- fit$draw(20000)                                     # exact, independent posterior draws
+post <- t(apply(draws, 2, function(z) c(mean = mean(z), q2.5 = quantile(z, 0.025, names = FALSE),
+                                         q97.5 = quantile(z, 0.975, names = FALSE))))
+ols <- lm(y_kg ~ X - 1)
+cbind(round(post, 3), ols = c(round(coef(ols), 3), round(summary(ols)$sigma^2, 3)))
+```
+
+The posterior means are close to the least-squares estimates, as @prp-flat-limit predicts for a weak prior and $n=189$. They are slightly shrunk towards zero by the prior. Smoking is associated with a birth weight lower by about 0.3 kg, with a 95% interval excluding zero, and history of hypertension with a larger decrease, estimated less precisely because only 12 mothers had it.
+
+**Posterior predictive check.** Do replicated data reproduce the distribution of birth weights? We check the standard deviation, the lower tail (the proportion below 2.5 kg, the clinical definition of low birth weight) and the skewness:
+
+```{r}
+#| label: reg-linear-ppc
+set.seed(2002)
+S <- 2000; idx <- sample(nrow(draws), S)
+mu_rep <- draws[idx, 1:p] %*% t(X)
+yrep <- mu_rep + matrix(rnorm(S * nrow(X)), S) * sqrt(draws[idx, "sigma2"])
+skew <- function(z) mean((z - mean(z))^3) / sd(z)^3
+Ts <- list(sd = sd, prop_low = function(z) mean(z < 2.5), skewness = skew)
+t(sapply(Ts, function(f) { tr <- apply(yrep, 1, f); c(observed = f(y_kg), rep_mean = mean(tr), ppp = ppc_pvalue(f(y_kg), tr)) }))
+```
+
+The model reproduces the spread, the proportion of low birth weights and the mild skewness: no evidence of misfit in these respects.
+
+**Prediction for a new mother.** The predictive distribution of birth weight for a 25-year-old non-smoking mother weighing 130 lb with no other risk factors, and for an otherwise identical smoker:
+
+```{r}
+#| label: reg-linear-predict
+x_new <- function(smoke) c(1, (25 - mean(bw$age)) / sd(bw$age), (130 - mean(bw$lwt)) / sd(bw$lwt), smoke, 0, 0, 0, 0, 0)
+pred <- sapply(c(non_smoker = 0, smoker = 1), function(s) {
+  xn <- x_new(s); mu <- draws[, 1:p] %*% xn; yn <- rnorm(nrow(draws), mu, sqrt(draws[, "sigma2"]))
+  c(mean_mu = mean(mu), mu_lo = quantile(mu, 0.05, names = FALSE), mu_hi = quantile(mu, 0.95, names = FALSE),
+    pred_lo = quantile(yn, 0.05, names = FALSE), pred_hi = quantile(yn, 0.95, names = FALSE), P_low_bw = mean(yn < 2.5))
+})
+round(pred, 3)
+```
+
+The 90% interval for the *mean* birth weight of such babies is narrow, but the 90% *predictive* interval for an individual baby spans about 2.1 kg. Most of the uncertainty about an individual birth is irreducible variability, not parameter uncertainty.
+
+## Worked example 2: low birth weight, logistic regression {#sec-reg-worked-logistic}
+
+Now model the binary outcome `low` (birth weight below 2.5 kg) with the same predictors, independent $\mathrm N(0,2.5^2)$ priors on the slopes and $\mathrm N(0,5^2)$ on the intercept. We use HMC with a diagonal mass matrix from the Laplace approximation and dual-averaging warm-up.
+
+```{r}
+#| label: reg-logistic-fit
+y_low <- bw$low
+mod <- logistic_regression_model(X, y_low, prior_sd = c(5, rep(2.5, p - 1)))
+hess <- function(b) { pr <- inv_logit(as.vector(X %*% b)); -crossprod(X * (pr * (1 - pr)), X) - diag(1 / c(5, rep(2.5, p - 1))^2) }
+la <- laplace_approximation(mod$log_density, mod$grad, hess, rep(0, p))
+set.seed(2003)
+chains <- lapply(1:4, function(m) {
+  start <- as.vector(rmvnorm_chol(1, la$mode, 4 * la$cov))
+  wu <- hmc_warmup(mod$log_density, mod$grad, start, 500, n_steps = 10, inv_mass = diag(la$cov))
+  hmc_sampler(mod$log_density, mod$grad, wu$position, 1500, wu$step_size, 10, inv_mass = diag(la$cov))
+})
+B <- do.call(rbind, lapply(chains, `[[`, "draws")); colnames(B) <- colnames(X)
+worst_rhat <- max(sapply(1:p, function(j) rhat_rank(sapply(chains, function(ch) ch$draws[, j]))))
+min_ess <- min(sapply(1:p, function(j) ess_bulk(sapply(chains, function(ch) ch$draws[, j]))))
+c(max_rhat = worst_rhat, min_bulk_ess = min_ess, divergences = sum(sapply(chains, function(ch) sum(ch$divergent))))
+g <- glm(y_low ~ X - 1, family = binomial)
+cbind(post_mean = colMeans(B), post_sd = apply(B, 2, sd), glm = coef(g), glm_se = sqrt(diag(vcov(g)))) |> round(3)
+```
+
+Diagnostics are clean, and the posterior means and standard deviations are close to the maximum likelihood estimates and standard errors, slightly shrunk by the priors. The largest differences are for coefficients estimated from few events (such as hypertension), where the prior's regularisation matters most.
+
+**Interpretable summaries.** The odds ratio for smoking, and the average predictive comparison, i.e. the average difference in the probability of low birth weight between smoking and not smoking, holding the other predictors at their observed values:
+
+```{r}
+#| label: reg-logistic-summaries
+or_smoke <- exp(B[, "smoke"])
+X1 <- X; X1[, "smoke"] <- 1; X0 <- X; X0[, "smoke"] <- 0
+apc <- rowMeans(inv_logit(B %*% t(X1)) - inv_logit(B %*% t(X0)))
+rbind(odds_ratio_smoke = c(mean = mean(or_smoke), quantile(or_smoke, c(0.025, 0.975))),
+      avg_prob_difference = c(mean = mean(apc), quantile(apc, c(0.025, 0.975))))
+```
+
+Smoking is associated with about 2.5 times the odds of low birth weight in these data (95% interval roughly 1.0 to 5.4), corresponding to an average increase of about 0.14 in the probability of low birth weight. The interval for that difference runs from almost 0 to about 0.28, so the uncertainty is considerable.
+
+**Calibration check.** We group mothers by posterior mean predicted probability and compare the observed proportion of low birth weights in each group with the predicted proportions:
+
+```{r}
+#| label: fig-reg-calibration
+#| fig-cap: "Calibration of the logistic regression for low birth weight: observed proportion (points, with binomial 90% intervals) against mean predicted probability in five groups, with the posterior predictive 90% range of the observed proportion in each group (vertical bars, orange). Points near the diagonal and inside the bars indicate adequate calibration."
+#| fig-height: 3.6
+p_hat <- colMeans(inv_logit(B %*% t(X)))
+grp <- cut(p_hat, quantile(p_hat, seq(0, 1, 0.2)), include.lowest = TRUE)
+obs <- tapply(y_low, grp, mean); pred <- tapply(p_hat, grp, mean); nn <- table(grp)
+set.seed(2004)
+rep_prop <- sapply(1:1000, function(s) { pr <- inv_logit(as.vector(X %*% B[sample(nrow(B), 1), ]))
+  tapply(rbinom(length(pr), 1, pr), grp, mean) })
+plot(pred, obs, xlim = c(0, 0.7), ylim = c(0, 0.7), pch = 16, col = course_cols[["blue"]],
+     xlab = "mean predicted probability", ylab = "observed proportion")
+abline(0, 1, lty = 2, col = course_muted)
+segments(pred + 0.005, apply(rep_prop, 1, quantile, 0.05), pred + 0.005, apply(rep_prop, 1, quantile, 0.95),
+         col = course_cols[["orange"]], lwd = 2)
+```
+
+## Worked example 3: warp breaks, Poisson regression {#sec-reg-worked-poisson}
+
+The `warpbreaks` data record the number of warp breaks per loom for two wool types and three tension levels, nine looms per combination [@tippett1950technological, as distributed with R]. We fit a Poisson regression with main effects and interaction ($p=6$ coefficients, i.e. a separate rate for each wool × tension cell) and $\mathrm N(0,2.5^2)$ priors.
+
+```{r}
+#| label: reg-poisson-fit
+Xw <- model.matrix(~ wool * tension, warpbreaks); yw <- warpbreaks$breaks
+pm <- poisson_regression_model(Xw, yw, prior_sd = c(5, rep(2.5, ncol(Xw) - 1)))
+set.seed(2005)
+pch <- lapply(1:4, function(m) {
+  wu <- hmc_warmup(pm$log_density, pm$grad, c(log(mean(yw)), rep(0, 5)) + rnorm(6, 0, 0.2), 500, n_steps = 10)
+  hmc_sampler(pm$log_density, pm$grad, wu$position, 1500, wu$step_size, 10)$draws
+})
+Bw <- do.call(rbind, pch)
+cbind(post_mean = colMeans(Bw), glm = coef(glm(breaks ~ wool * tension, poisson, warpbreaks))) |> round(3)
+```
+
+**Is the Poisson model adequate?** A posterior predictive check of the dispersion within each cell:
+
+```{r}
+#| label: reg-poisson-ppc
+set.seed(2006)
+cells <- interaction(warpbreaks$wool, warpbreaks$tension)
+disp <- function(z) mean(tapply(z, cells, function(v) var(v) / mean(v)))
+rep_disp <- replicate(2000, { b <- Bw[sample(nrow(Bw), 1), ]; disp(rpois(length(yw), exp(Xw %*% b))) })
+c(observed_mean_dispersion = disp(yw), replicated_mean = mean(rep_disp), ppp = ppc_pvalue(disp(yw), rep_disp))
+```
+
+The observed within-cell variance is on average almost four times the mean, far outside the replicated range. The counts vary between looms much more than a Poisson model allows, so the Poisson posterior intervals for the rate ratios are too narrow. Remedies are a negative-binomial likelihood or a loom-level random effect, $\eta_i=x_i^\top\beta+u_i$ with $u_i\sim\mathrm N(0,\sigma_u^2)$, which is a hierarchical model (@sec-hierarchical). Project 5 carries this analysis through.
+
+## R implementation {#sec-reg-r}
+
+The regression models are in `R/models/regression.R`:
+
+```{r}
+#| file: R/models/regression.R
+```
+
+Each GLM constructor returns the log posterior, its gradient (for HMC), and the pointwise log-likelihood (for model comparison, @sec-model-comparison). The conjugate linear model returns the posterior hyperparameters and a function that draws exact, independent samples. The log-likelihoods use `plogis(..., log.p = TRUE)` for numerical stability at extreme linear predictors.
+
+## Computational experiment: when Bayesian and classical estimates differ {#sec-reg-experiment}
+
+We study the sampling properties of the posterior mean and of the MLE for a logistic regression with $p=10$ correlated predictors, true coefficients drawn from $\mathrm N(0,0.5^2)$, and sample sizes $n=50,200,1000$. For speed, the posterior mode under $\mathrm N(0,1)$ priors (computed by Newton's method) stands in for the posterior mean, which it approximates closely at these sample sizes. Each setting is replicated 200 times.
+
+```{r}
+#| label: reg-shrinkage-experiment
+set.seed(2007)
+p10 <- 10; Sig <- 0.5^abs(outer(1:p10, 1:p10, "-"))
+sim_one <- function(n) {
+  beta <- rnorm(p10, 0, 0.5)
+  Xs <- cbind(1, rmvnorm_chol(n, rep(0, p10), Sig)); yy <- rbinom(n, 1, inv_logit(Xs %*% c(0, beta)))
+  mle <- suppressWarnings(glm.fit(Xs, yy, family = binomial())$coefficients[-1])
+  m <- logistic_regression_model(Xs, yy, prior_sd = c(5, rep(1, p10)))
+  h <- function(b) { pr <- inv_logit(as.vector(Xs %*% b)); -crossprod(Xs * (pr * (1 - pr)), Xs) - diag(1 / c(5, rep(1, p10))^2) }
+  map <- newton_maximise(m$log_density, m$grad, h, rep(0, p10 + 1))$par[-1]
+  c(mle = sum((mle - beta)^2), bayes = sum((map - beta)^2), sep = any(abs(mle) > 10))
+}
+res <- t(sapply(c(50, 200, 1000), function(n) { r <- replicate(200, sim_one(n))
+  c(n = n, mse_mle = median(r["mle", ]), mse_bayes = median(r["bayes", ]), frac_mle_diverging = mean(r["sep", ])) }))
+round(res, 3)
+```
+
+With $n=50$ and ten predictors, the MLE is unstable: it diverges in a noticeable fraction of data sets because of separation, and even when it exists its squared error is large. The posterior estimate, regularised by the prior, has a far smaller error. As $n$ grows the two converge, as the Bernstein–von Mises theorem predicts. The (median) squared error is reported because the MLE's mean squared error is dominated by divergent fits.
+
+## Diagnostics and validation {#sec-reg-validation}
+
+- **Sampler**: multiple chains, $\widehat R$, ESS and divergences for all coefficients, as in the logistic example.
+- **Code**: gradients of all GLM log posteriors are tested against finite differences, and the conjugate linear regression against least squares in the flat-prior limit (`tests/testthat/`).
+- **Model**: posterior predictive checks targeted at the model's assumptions (dispersion, tail proportions, calibration).
+- **Prior**: prior predictive checks on the outcome scale (@sec-prior-worked), and sensitivity of key conclusions to the prior scale.
+- **Recovery**: fit simulated data with known coefficients, as in @sec-val-experiment.
+
+## Interpretation {#sec-reg-interpretation}
+
+For the birth-weight data, Bayesian and classical analyses tell essentially the same story, because the data are moderately informative and the priors weak. The Bayesian analysis adds direct probability statements (for example, the posterior probability that smoking is associated with lower birth weight), predictive distributions that include parameter uncertainty, and summaries on interpretable scales. For the warp-break data, the predictive check showed that the Poisson model's uncertainty statements cannot be trusted, which is a reminder that a well-computed posterior is only as good as its model.
+
+## Limitations and common errors {#sec-reg-errors}
+
+- **Priors on unstandardised predictors.** A "default" $\mathrm N(0,1)$ prior means different things for age in years and income in dollars.
+- **Interpreting coefficients causally** in observational data.
+- **Reporting only coefficients** for non-linear models. Report predictions and predictive comparisons on the outcome scale.
+- **Ignoring overdispersion** in count models.
+- **Ignoring separation** in logistic regression: with a weak prior the posterior may be proper yet heavily prior-dependent.
+- **Confusing intervals for the mean response with predictive intervals for individual outcomes.**
+- **Treating "the Bayesian estimate agrees with `glm()`" as validation of the model.** It validates the computation at best.
+
+## Chapter summary {#sec-reg-summary}
+
+- The conjugate normal linear model has closed-form posterior and predictive distributions (@thm-bayes-linear) and reproduces classical $t$ intervals under the prior $\pi(\beta,\sigma^2)\propto1/\sigma^2$ (@prp-flat-limit).
+- Logistic and Poisson regressions need MCMC (or approximations). Their log posteriors with Gaussian priors are concave, and HMC with a preconditioning mass matrix samples them efficiently.
+- Priors belong on standardised scales. Weakly informative priors regularise without dominating, and they matter most with few events, many predictors or separation.
+- Posterior draws give predictive means, predictive outcomes and average predictive comparisons on interpretable scales.
+- Model checking (predictive checks, calibration, residuals) is essential: the Poisson model of the warp-break data was overdispersed.
+- Bayesian and maximum likelihood estimates agree for large $n$ and weak priors, and differ, often to the Bayesian estimate's advantage in mean squared error, for small $n$ and many predictors.
+
+## Exercises {#sec-reg-exercises}
+
+::: {#exr-reg-1}
+**[Mathematical ★]** Show that the posterior mean $m_n$ in @thm-bayes-linear is a matrix-weighted average of the prior mean $m_0$ and the least-squares estimate $\hat\beta$, with weights $V_nV_0^{-1}$ and $V_nX^\top X$.
+:::
+
+::: {#exr-reg-2}
+**[Mathematical ★★]** Derive the posterior predictive distribution of a new response in @thm-bayes-linear, starting from $\tilde y=\tilde x^\top\beta+\varepsilon$.
+:::
+
+::: {#exr-reg-3}
+**[R ★★]** Fit the birth-weight linear model with the semi-conjugate Gibbs sampler `gibbs_linear_regression()` (independent priors on $\beta$ and $\sigma^2$) and compare the posteriors with the conjugate fit. When would you expect them to differ substantially?
+:::
+
+::: {#exr-reg-4}
+**[R ★★]** Construct a data set with complete separation (e.g. delete the overlapping observations for one predictor), fit it with `glm()` and with the logistic model under $\mathrm N(0,2.5^2)$ and $\mathrm N(0,10^2)$ priors, and compare the estimates. Discuss what the posterior depends on.
+:::
+
+::: {#exr-reg-5}
+**[Diagnostics ★★]** For the logistic birth-weight model, compute the posterior distribution of the residual for each observation and plot the posterior mean residuals against mother's weight and age. Is there evidence of a non-linear relationship?
+:::
+
+::: {#exr-reg-6}
+**[Simulation ★★]** Fit a negative-binomial regression to the warp-break data by adding a log-dispersion parameter $\log\phi$ to `poisson_regression_model()` (write the log density and gradient), sample it with HMC, and repeat the dispersion check.
+:::
+
+::: {#exr-reg-7}
+**[Critique ★★]** A report states: "Bayesian logistic regression showed that smoking causes a 2.0-fold increase in the odds of low birth weight (95% credible interval 1.0–4.1)." Comment.
+:::
+
+::: {#exr-reg-8}
+**[Research ★★★]** Implement the Pólya–Gamma data-augmentation Gibbs sampler for logistic regression [@polson2013bayesian], using a truncated series to draw Pólya–Gamma variables, and compare its ESS per second with HMC on the birth-weight data.
+:::
+
+## Further reading {#sec-reg-reading}
+
+- @gelman2020regression and @gelman2006data: applied regression modelling, prior choice and predictive comparisons.
+- @gelman2013bda, Chapters 14–16: Bayesian linear and generalised linear models.
+- @gelman2008weakly: weakly informative priors for logistic regression and the separation problem.
+- @hosmer1989applied and @venables2002modern: the birth-weight data and classical analyses.
+- @albert1993bayesian and @polson2013bayesian: data augmentation for binary regression.
+
+## Solutions {#sec-reg-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-reg-1
+$m_n=V_n(V_0^{-1}m_0+X^\top y)=V_nV_0^{-1}m_0+V_nX^\top X\hat\beta$, using $X^\top y=X^\top X\hat\beta$. The weights sum to $V_n(V_0^{-1}+X^\top X)=I$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-reg-2
+Given $\sigma^2$ and $y$, $\tilde x^\top\beta\sim\mathrm N(\tilde x^\top m_n,\sigma^2\tilde x^\top V_n\tilde x)$, and $\varepsilon\sim\mathrm N(0,\sigma^2)$ independently, so $\tilde y\mid\sigma^2,y\sim\mathrm N(\tilde x^\top m_n,\sigma^2(1+\tilde x^\top V_n\tilde x))$. Integrating over $\sigma^2\sim\mathrm{InvGamma}(a_n,b_n)$ gives the stated $t_{2a_n}$ distribution, as in @thm-nig.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-reg-3
+With priors of similar strength the two posteriors are nearly identical here, because the data dominate. They differ when the prior on $\beta$ is informative *and* the data imply a residual variance far from the prior's. The conjugate prior then scales the coefficient prior by $\sigma^2$ and shrinks less (or more) than the semi-conjugate prior, whose coefficient prior scale is fixed.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-reg-4
+`glm()` gives huge coefficients with enormous standard errors, and warns about fitted probabilities numerically 0 or 1. The posterior under $\mathrm N(0,2.5^2)$ has a finite, moderate mean for the separating coefficient, determined largely by the prior. Under $\mathrm N(0,10^2)$ the posterior mean is much larger. With separation the likelihood is monotone in that coefficient, so its posterior is the prior's tail truncated by the likelihood's increase: the conclusion is prior-dependent and must be reported as such.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-reg-5
+Compute $r_i^{(s)}=y_i-\operatorname{logit}^{-1}(x_i^\top\beta^{(s)})$ and average over $s$. Binary residuals are hard to read directly, so bin them by the predictor (e.g. deciles of mother's weight) and plot the average residual per bin with posterior intervals. A systematic pattern suggests adding a non-linear term (e.g. a spline). With 189 observations, little evidence of non-linearity is expected.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-reg-6
+With $\mu_i=e^{\eta_i}$ and size $\phi=e^\psi$: $\log p(y_i)=\log\Gamma(y_i+\phi)-\log\Gamma(\phi)-\log y_i!+\phi\log\frac{\phi}{\phi+\mu_i}+y_i\log\frac{\mu_i}{\phi+\mu_i}$. Derivatives: $\partial/\partial\eta_i=y_i-\mu_i\frac{y_i+\phi}{\phi+\mu_i}$, and $\partial/\partial\psi=\phi\big[\psi_0(y_i+\phi)-\psi_0(\phi)+\log\frac{\phi}{\phi+\mu_i}+1-\frac{y_i+\phi}{\phi+\mu_i}\big]$, with $\psi_0$ the digamma function. Check them by finite differences. The negative-binomial fit reproduces the observed dispersion (ppp-value no longer extreme), and the rate-ratio intervals widen.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-reg-7
+(i) "Causes" is not supported by observational data with possible unmeasured confounding. (ii) An interval of 1.0–4.1 is compatible with anything from no association to a fourfold one; summarising it as "a 2.0-fold increase" overstates the precision. (iii) The odds ratio should be translated to the probability scale (an average predictive comparison) for interpretation, since odds ratios overstate risk ratios when the outcome is common (here about 31%). (iv) Prior, model checks and sensitivity analyses should be reported.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-reg-8
+Pólya–Gamma augmentation introduces $\omega_i\sim\mathrm{PG}(1,x_i^\top\beta)$. Then $\beta\mid\omega,y\sim\mathrm N(V(X^\top\kappa+V_0^{-1}m_0),V)$ with $V=(X^\top\Omega X+V_0^{-1})^{-1}$ and $\kappa_i=y_i-\frac12$, a conjugate Gibbs sampler. Draw $\mathrm{PG}(1,c)$ approximately by truncating its infinite sum-of-gammas representation at a few hundred terms. On the birth-weight data the sampler mixes well (an ESS per iteration close to that of HMC), and its cost per iteration is dominated by the $p\times p$ Cholesky factorisation and the PG draws. Validate the truncation by SBC.
+:::

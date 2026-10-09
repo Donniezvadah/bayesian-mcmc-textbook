@@ -1,0 +1,354 @@
+# Importance Sampling and its Connections to MCMC {#sec-importance}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. derive the importance sampling and self-normalised importance sampling estimators, their bias, variance and asymptotic distributions;
+2. state the condition for finite variance, derive the variance-minimising proposal, and design robust proposals (heavy tails, defensive mixtures);
+3. compute and interpret the effective sample size of a set of importance weights, and explain weight degeneracy in high dimensions;
+4. estimate normalising constants (marginal likelihoods) by importance sampling, and recognise estimators with infinite variance;
+5. explain precisely how importance sampling differs from Markov chain sampling, and how the two are combined: reweighting MCMC output, sampling–importance–resampling, independence Metropolis–Hastings and sequential Monte Carlo.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-monte-carlo (Monte Carlo estimators, delta method), @sec-mh (independence sampler), @sec-math-laplace (Laplace approximation).
+:::
+
+## Motivation {#sec-is-motivation}
+
+Monte Carlo needs draws from $\pi$. Importance sampling (IS) instead draws from a convenient *proposal* $g$ and corrects for the mismatch by weighting each draw by $\pi/g$ [@kahn1953methods]. The draws are independent, the weights show exactly how good the proposal is, and the same weights provide an estimate of the normalising constant $Z$, which MCMC does not give directly. Importance sampling is also the basis of several tools used throughout applied Bayesian work: reweighting posterior draws to assess prior sensitivity, approximate leave-one-out cross-validation (@sec-model-comparison), particle filters and sequential Monte Carlo (@sec-specialized). Its weakness is equally fundamental. In high dimensions the weights degenerate, and a handful of draws carry all the weight. Understanding when and why this happens tells us when IS can be trusted and why MCMC is usually needed instead.
+
+## Definitions and notation {#sec-is-definitions}
+
+Let $\pi=\tilde\pi/Z$ be the target and $g$ a proposal density with $g(\theta)>0$ wherever $\tilde\pi(\theta)f(\theta)\neq0$. Draw $\theta_1,\dots,\theta_N\stackrel{\text{iid}}\sim g$ and define the **unnormalised weights** $\tilde w_i=\tilde\pi(\theta_i)/g(\theta_i)$ and the **normalised weights** $\bar w_i=\tilde w_i/\sum_j\tilde w_j$.
+
+::: {#def-is-estimators}
+## Importance sampling estimators
+If $\pi$ is normalised (i.e. $Z$ is known), the **importance sampling estimator** of $\mu=\mathbb E_\pi[f]$ is $\hat\mu_{\mathrm{IS}}=\frac1N\sum_i\frac{\pi(\theta_i)}{g(\theta_i)}f(\theta_i)$. If only $\tilde\pi$ is available, the **self-normalised importance sampling (SNIS) estimator** is
+$$
+\hat\mu_{\mathrm{SNIS}}=\frac{\sum_i\tilde w_if(\theta_i)}{\sum_i\tilde w_i}=\sum_i\bar w_if(\theta_i),
+$$ {#eq-snis}
+and the **normalising-constant estimator** is $\hat Z=\frac1N\sum_i\tilde w_i$.
+:::
+
+The two estimators differ in an important way: IS is unbiased but needs $Z$, while SNIS does not need $Z$ but is biased (by $O(1/N)$). Bayesian applications almost always use SNIS.
+
+## Mathematical development {#sec-is-development}
+
+### Unbiasedness, consistency and variance {#sec-is-theory}
+
+::: {#prp-is-basic}
+## Properties of IS and SNIS
+Under the support condition above:
+
+1. $\mathbb E_g[\hat\mu_{\mathrm{IS}}]=\mu$ and $\mathbb E_g[\hat Z]=Z$. If $\mathbb E_g[w^2f^2]<\infty$ with $w=\pi/g$, then $\operatorname{Var}(\hat\mu_{\mathrm{IS}})=\frac1N\big(\mathbb E_g[w^2f^2]-\mu^2\big)$.
+2. If $\mathbb E_\pi\lvert f\rvert<\infty$, then $\hat\mu_{\mathrm{SNIS}}\to\mu$ almost surely.
+3. If $\mathbb E_g[w^2]<\infty$ and $\mathbb E_g[w^2f^2]<\infty$, then $\sqrt N(\hat\mu_{\mathrm{SNIS}}-\mu)\xrightarrow{d}\mathrm N(0,\sigma^2_{\mathrm{SNIS}})$ with
+$$
+\sigma^2_{\mathrm{SNIS}}=\mathbb E_g\big[w(\theta)^2\{f(\theta)-\mu\}^2\big].
+$$ {#eq-snis-variance}
+:::
+
+::: {.proof}
+(1) $\mathbb E_g[wf]=\int\frac{\pi}{g}fg=\int f\pi=\mu$, and similarly $\mathbb E_g[\tilde w]=\int\tilde\pi=Z$. The variance is that of an average of independent copies of $wf$.
+(2) Numerator and denominator of @eq-snis, divided by $N$, converge almost surely to $\mathbb E_g[\tilde wf]=Z\mu$ and $\mathbb E_g[\tilde w]=Z$ by the strong law (@thm-slln); their ratio converges to $\mu$.
+(3) Apply the delta method (@prp-delta) to $g(a,b)=a/b$ at $(Z\mu,Z)$ with $Z=(\tilde wf,\tilde w)$. The gradient is $(1/Z,-\mu/Z)$, so the asymptotic variance is $\operatorname{Var}_g(\tilde wf-\mu\tilde w)/Z^2=\mathbb E_g[w^2(f-\mu)^2]$, since $\tilde wf-\mu\tilde w$ has mean zero.
+:::
+
+The standard error of $\hat\mu_{\mathrm{SNIS}}$ is estimated by plugging in, $\widehat{\operatorname{se}}=\big(\sum_i\bar w_i^2\{f(\theta_i)-\hat\mu_{\mathrm{SNIS}}\}^2\big)^{1/2}$, which is what `importance_sampling()` returns.
+
+### Finite variance and the choice of proposal {#sec-is-proposal}
+
+The key quantity is
+$$
+\mathbb E_g[w^2]=\int\frac{\pi(\theta)^2}{g(\theta)}\,d\theta,
+$$
+which must be finite for the CLT and for the standard error to mean anything. It is infinite whenever $g$ has *lighter tails* than $\pi^2$ requires, roughly whenever the proposal is narrower than the target in some direction.
+
+::: {#prp-is-normal-variance}
+## Normal target, normal proposal
+For $\pi=\mathrm N(0,1)$ and $g=\mathrm N(0,s^2)$, $\mathbb E_g[w^2]=\dfrac{s^2}{\sqrt{2s^2-1}}$ if $s^2>\frac12$, and $\mathbb E_g[w^2]=\infty$ if $s^2\le\frac12$.
+:::
+
+::: {.proof}
+$\frac{\pi(\theta)^2}{g(\theta)}=\frac{s}{\sqrt{2\pi}}\exp\{-\theta^2(1-\frac1{2s^2})\}$, using $\pi^2=\frac1{2\pi}e^{-\theta^2}$ and $1/g=s\sqrt{2\pi}e^{\theta^2/(2s^2)}$. This is integrable iff $1-\frac1{2s^2}>0$, i.e. $s^2>\frac12$, and then $\int=\frac{s}{\sqrt{2\pi}}\sqrt{\frac{\pi}{1-1/(2s^2)}}=\frac{s^2}{\sqrt{2s^2-1}}$.
+:::
+
+A proposal slightly narrower than the target ($s=0.8$) is still acceptable; one that is much narrower ($s\le0.71$) gives estimators that *look* fine for any finite $N$ while their variance is infinite. A wider proposal costs only a modest factor (for $s=2$, $\mathbb E_g[w^2]\approx1.5$). **When in doubt, err towards heavy tails.** Practical proposals are therefore Student $t$ distributions centred at the posterior mode with a scale from the Laplace approximation, or **defensive mixtures** $g=\lambda g_0+(1-\lambda)g_1$, where $g_0$ is a heavy-tailed or prior-like component that bounds the weights: $w\le\pi/(\lambda g_0)$ [@owen2000safe].
+
+::: {#prp-optimal-is}
+## The variance-minimising proposal
+Among proposals with $g>0$ where $f\pi\neq0$, $\operatorname{Var}(\hat\mu_{\mathrm{IS}})$ is minimised by $g^\ast(\theta)\propto\lvert f(\theta)\rvert\pi(\theta)$. If $f\ge0$, $g^\ast$ gives zero variance.
+:::
+
+::: {.proof}
+By Cauchy–Schwarz, $\big(\int\lvert f\rvert\pi\big)^2=\big(\int\frac{\lvert f\rvert\pi}{\sqrt g}\sqrt g\big)^2\le\int\frac{f^2\pi^2}{g}\int g=\mathbb E_g[w^2f^2]$, with equality iff $\lvert f\rvert\pi/\sqrt g\propto\sqrt g$, i.e. $g\propto\lvert f\rvert\pi$. For $f\ge0$, $w f=\int f\pi$ is constant under $g^\ast$, so the variance is zero.
+:::
+
+$g^\ast$ requires the very integral we want, so it is not usable directly. The proposition does explain *why IS can beat direct sampling*: for rare events ($f=\mathbf 1_A$ with small $\pi(A)$), a proposal concentrated on $A$ can be far better than sampling from $\pi$ itself.
+
+### Effective sample size and weight degeneracy {#sec-is-ess}
+
+A single number summarising the quality of a set of weights is Kish's **effective sample size** [@kong1994sequential]:
+$$
+\mathrm{ESS}_{\mathrm{IS}}=\frac{\big(\sum_i\tilde w_i\big)^2}{\sum_i\tilde w_i^2}=\frac{1}{\sum_i\bar w_i^2}\in[1,N].
+$$ {#eq-is-ess}
+It equals $N$ when all weights are equal and 1 when a single weight dominates. It approximates $N/\mathbb E_g[w^2]$ for normalised $w$, so it is the number of independent draws from $\pi$ that would give the same variance for a function $f$ that is roughly constant. It is a heuristic: it does not depend on $f$, it can be badly overestimated when $\mathbb E_g[w^2]=\infty$ (because the sample has not yet produced the huge weights that make the variance infinite), and alternatives have been proposed [@elvira2022rethinking].
+
+**Degeneracy in high dimensions.** Suppose $\pi$ and $g$ are products of $d$ identical components, $\pi=\prod_jp(\theta_j)$ and $g=\prod_jq(\theta_j)$. Then $w=\prod_j\{p(\theta_j)/q(\theta_j)\}$ and
+$$
+\mathbb E_g[w^2]=\big(\mathbb E_q[(p/q)^2]\big)^d=c^d,\qquad c\ge1,
+$$
+with equality only if $q=p$. The ESS therefore decays *exponentially* in dimension for any fixed mismatch: with $c=1.1$ per coordinate, $d=100$ gives $\mathbb E_g[w^2]\approx1.4\times10^4$. More generally, the sample size needed for IS to be accurate is of order $\exp\{\mathrm{KL}(\pi\Vert g)\}$ [@chatterjee2018sample], and KL divergences typically grow linearly with dimension. This is the fundamental reason importance sampling does not replace MCMC in high-dimensional problems.
+
+### Estimating normalising constants {#sec-is-evidence}
+
+$\hat Z=\frac1N\sum_i\tilde w_i$ is an unbiased estimator of $Z$. With $\tilde\pi(\theta)=p(y\mid\theta)\pi(\theta)$, $Z=p(y)$ is the marginal likelihood. Two special cases are instructive:
+
+- **Prior as proposal** ($g=\pi$): $\hat Z=\frac1N\sum_ip(y\mid\theta_i)$ averages the likelihood over prior draws. It is unbiased, but nearly all prior draws fall where the likelihood is negligible, so the variance is enormous when the data are informative.
+- **Posterior as proposal** ("harmonic mean" estimator): using $\mathbb E_{\pi(\cdot\mid y)}[1/p(y\mid\theta)]=1/p(y)$ gives $\hat Z_{\mathrm{HM}}=\big(\frac1N\sum_i1/p(y\mid\theta_i)\big)^{-1}$ from posterior draws [@newton1994approximate]. It frequently has *infinite variance* and should not be used. Its estimates converge so slowly and erratically that they are effectively arbitrary (@exr-is-6).
+
+A good proposal for $Z$ must cover the posterior with heavier tails, such as a $t$ distribution fitted at the mode. Bridge sampling and sequential Monte Carlo improve on this further (@sec-model-comparison).
+
+### Importance sampling versus Markov chain sampling {#sec-is-vs-mcmc}
+
+| | Importance sampling | MCMC |
+|:--|:--|:--|
+| Draws | independent, from $g$ | dependent, from a Markov chain with invariant $\pi$ |
+| Correction | explicit weights $\pi/g$ | acceptance/rejection inside the chain; draws unweighted |
+| Normalising constant | estimated directly by $\hat Z$ | not directly available |
+| Error assessment | weights reveal mismatch; ESS from weights | autocorrelation; multiple chains |
+| Failure mode | weight degeneracy, infinite variance | slow mixing, metastability |
+| Dimension | degrades exponentially for fixed mismatch | degrades polynomially for good samplers |
+| Parallelism | trivially parallel | sequential within a chain |
+
+The two are combined in several ways:
+
+1. **Reweighting MCMC output.** Draws from a posterior $\pi_1(\theta\mid y)$ can be reweighted by $w\propto\pi_2(\theta\mid y)/\pi_1(\theta\mid y)$ to estimate expectations under a nearby posterior $\pi_2$ (a different prior, or one observation removed). This is cheap prior-sensitivity analysis, and it is the basis of approximate leave-one-out cross-validation, where Pareto smoothing stabilises the weights [@vehtari2024pareto] (@sec-model-comparison).
+2. **Sampling–importance–resampling (SIR).** Resampling the $\theta_i$ with probabilities $\bar w_i$ gives approximately unweighted draws from $\pi$ [@smith1992bayesian]. Duplicates appear when the weights are uneven, and resampling adds variance without adding information.
+3. **The independence Metropolis–Hastings sampler** (@sec-mh) uses the same proposal $g$ but turns the weights into acceptance probabilities $\min\{1,w(\theta')/w(\theta)\}$. It is uniformly ergodic exactly when the IS weights are bounded.
+4. **Sequential Monte Carlo (SMC).** Instead of jumping from $g$ to $\pi$ in one step, move through a sequence of intermediate distributions $\pi_0=g,\pi_1,\dots,\pi_T=\pi$, for example the tempered posteriors $\pi_b\propto p(y\mid\theta)^b\pi(\theta)$. At each step, reweight from $\pi_{b_{k-1}}$ to $\pi_{b_k}$ (small mismatch, high ESS), resample, and *move* the particles with MCMC steps that leave $\pi_{b_k}$ invariant [@delmoral2006sequential; @chopin2002sequential; @neal2001annealed]. SMC combines IS's parallelism and normalising-constant estimates with MCMC's ability to move particles. Product of the incremental weight averages estimates $Z$ without bias. `smc_tempering()` in `R/samplers/tempering-smc.R` implements this with temperatures chosen adaptively so that each step keeps the conditional ESS at half the particle number [@chopin2020introduction].
+
+## Worked example: the bioassay posterior by importance sampling {#sec-is-worked}
+
+We estimate the bioassay posterior (@sec-mh-worked) by SNIS with a multivariate $t_4$ proposal centred at the mode and scaled by the Laplace covariance, and compare it with the grid and MCMC answers.
+
+```{r}
+#| label: is-bioassay
+dose <- c(-0.86, -0.30, -0.05, 0.73); deaths <- c(0, 1, 3, 5)
+X <- cbind(1, rep(dose, each = 5)); y <- unlist(lapply(deaths, function(k) c(rep(1, k), rep(0, 5 - k))))
+model <- logistic_regression_model(X, y, prior_sd = 10)
+hess <- function(b) { p <- inv_logit(as.vector(X %*% b)); -crossprod(X * (p * (1 - p)), X) - diag(1 / 100, 2) }
+la <- laplace_approximation(model$log_density, model$grad, hess, c(0, 0))
+nu <- 4; S <- 20000
+set.seed(1401)
+is_out <- importance_sampling(
+  f = function(th) th[2],                                   # posterior mean of beta
+  log_target = model$log_density,
+  r_proposal = function(n) rmvt_chol(n, la$mode, la$cov, nu),
+  log_proposal = function(x) dmvt_log(x, la$mode, la$cov, nu), n = S)
+w <- is_out$weights; th <- is_out$x
+c(beta_mean = is_out$estimate, se = is_out$se,
+  alpha_mean = sum(w * th[, 1]), LD50_mean = sum(w * (-th[, 1] / th[, 2])),
+  ESS = is_out$ess, ESS_fraction = is_out$ess / S, log_Z = is_out$log_Z)
+```
+
+The grid computation of @sec-math-worked gave $\mathbb E[\beta\mid y]\approx8.89$ and $\log Z\approx-9.80$. The importance sampler reproduces both, with about 70% of the nominal sample size retained as effective sample size. The $t$ proposal covers the posterior's skewed right tail, which the Laplace normal approximation would not. The log normalising constant comes for free and agrees with the grid value to two decimals. Neither MCMC nor the Laplace approximation (off by about 0.05) provides this directly.
+
+**Prior sensitivity by reweighting.** How would $\mathbb E[\beta\mid y]$ change with independent $\mathrm N(0,2.5^2)$ priors instead of $\mathrm N(0,10^2)$? Reweight the same draws by the prior ratio:
+
+```{r}
+#| label: is-reweight
+lw_new <- is_out$log_weights + rowSums(dnorm(th, 0, 2.5, log = TRUE)) - rowSums(dnorm(th, 0, 10, log = TRUE))
+w_new <- normalise_log_weights(lw_new)
+c(beta_mean_new_prior = sum(w_new * th[, 2]), ESS_new = 1 / sum(w_new^2))
+```
+
+The tighter prior pulls the slope down substantially. The ESS after reweighting is lower, because the new posterior is narrower than the proposal, but still adequate. If the new prior were far from the old one, the ESS would collapse and the reweighted answer could not be trusted: the weights themselves show when reweighting fails.
+
+## R implementation {#sec-is-r}
+
+```{r}
+#| file: R/samplers/tempering-smc.R
+```
+
+`importance_sampling()` returns the SNIS estimate, the delta-method standard error from @eq-snis-variance, $\log\hat Z$ computed stably as `log_mean_exp` of the log weights, the Kish ESS (@eq-is-ess), and the weights themselves, so that other functions of the same draws can be estimated. All weight computations are done on the log scale and normalised with log-sum-exp. Raw weights $\tilde\pi/g$ overflow or underflow for any realistic likelihood.
+
+## Computational experiment {#sec-is-experiment}
+
+**Infinite variance hides in plain sight.** For $\pi=\mathrm N(0,1)$ and $g=\mathrm N(0,s^2)$, estimate $\mathbb E_\pi[\theta^2]=1$ with $N=1000$ over 500 replications, for $s=0.6$ (infinite variance by @prp-is-normal-variance), $s=0.8$ and $s=1.5$:
+
+```{r}
+#| label: is-infinite-variance
+set.seed(1402)
+res <- t(sapply(c(0.6, 0.8, 1.5), function(sg) {
+  est <- replicate(500, { th <- rnorm(1000, 0, sg); w <- dnorm(th) / dnorm(th, 0, sg)
+    c(snis = sum(w * th^2) / sum(w), ess = sum(w)^2 / sum(w^2)) })
+  c(s = sg, E_w2_theory = if (sg^2 > 0.5) sg^2 / sqrt(2 * sg^2 - 1) else Inf,
+    mean_estimate = mean(est["snis", ]), sd_estimate = sd(est["snis", ]),
+    median_reported_ESS = median(est["ess", ]))
+}))
+round(res, 3)
+```
+
+With $s=0.6$ the estimates are biased low and their spread is large, yet the *reported* ESS is still a substantial fraction of $N$ in a typical replication. The ESS cannot detect infinite variance from a sample that has not yet produced the extreme weights responsible for it.
+
+**Degeneracy with dimension.** For $\pi=\mathrm N(0,I_d)$ and $g=\mathrm N(0,1.2^2I_d)$, the theoretical $\mathbb E_g[w^2]=c^d$ with $c=1.2^2/\sqrt{2\cdot1.2^2-1}$:
+
+```{r}
+#| label: fig-is-dimension
+#| fig-cap: "Effective sample size fraction of importance sampling with a slightly too wide Gaussian proposal, as a function of dimension (log scale): simulated (points, $N=10^4$) and the approximation $1/c^d$ (line). A mismatch that costs nothing in one dimension makes IS useless in a few dozen."
+#| fig-height: 3.4
+set.seed(1403)
+c1 <- 1.2^2 / sqrt(2 * 1.2^2 - 1)
+dims <- c(1, 2, 5, 10, 20, 40, 60)
+ess_frac <- sapply(dims, function(d) {
+  th <- matrix(rnorm(1e4 * d, 0, 1.2), ncol = d)
+  lw <- rowSums(dnorm(th, log = TRUE)) - rowSums(dnorm(th, 0, 1.2, log = TRUE))
+  1 / sum(normalise_log_weights(lw)^2) / 1e4 })
+plot(dims, ess_frac, log = "y", pch = 16, col = course_cols[["blue"]], ylim = c(1e-4, 1),
+     xlab = "dimension d", ylab = "ESS / N")
+lines(dims, 1 / c1^dims, col = course_cols[["orange"]], lwd = 2)
+```
+
+**Sequential Monte Carlo on a bimodal target.** The random-walk Metropolis chain of @sec-why-worked could not move between the modes of $0.7\,\mathrm N(-4,1)+0.3\,\mathrm N(4,1)$. Write this target as "posterior = prior × likelihood" with prior $\mathrm N(0,10^2)$ and likelihood equal to target/prior, and run tempering SMC:
+
+```{r}
+#| label: is-smc-bimodal
+tg <- target_mixture(c(0.7, 0.3), c(-4, 4), c(1, 1))
+set.seed(1404)
+smc <- smc_tempering(
+  log_lik = function(th) tg$log_density(th) - dnorm(th, 0, 10, log = TRUE),
+  log_prior = function(th) dnorm(th, 0, 10, log = TRUE),
+  r_prior = function(n) rnorm(n, 0, 10), n = 4000)
+c(weight_right_mode = mean(smc$draws > 0), true_weight = 0.3, mean = mean(smc$draws), true_mean = tg$mean,
+  log_Z_estimate = smc$log_marginal_likelihood, log_Z_true = 0,
+  n_temperatures = length(smc$temperatures))
+```
+
+Particles start from the prior, which covers both modes. Tempering keeps both populations alive, and resampling distributes them in proportion to the modes' masses. The estimated mode weight is close to 0.3. The estimated log normalising constant is also close to the truth. Prior times likelihood equals the target exactly here, and `target_mixture()` returns the log of a *normalised* mixture density, so $Z=1$ and $\log Z=0$. SMC is one remedy for multimodality. Parallel tempering (@sec-specialized) is another.
+
+## Diagnostics and validation {#sec-is-validation}
+
+- **Check the weights.** Report the ESS. Plot the sorted weights, or the largest normalised weight. A single weight above, say, 0.1 means the estimate rests on one draw.
+- **Check the tails analytically.** Choose proposals with heavier tails than the target (Student $t$, defensive mixtures). The ESS cannot certify finite variance.
+- **Pareto diagnostics.** Fitting a generalised Pareto distribution to the largest weights estimates the tail index $k$ of the weight distribution. Values $\hat k>0.7$ indicate unreliable estimates [@vehtari2024pareto]. The `loo` package uses this diagnostic (@sec-model-comparison).
+- **Compare with an independent method** on test problems (grid, MCMC, exact results), as in the worked example.
+- **Replicate** with different seeds: estimates from infinite-variance samplers fluctuate wildly across replications even when each replication's reported standard error is small.
+
+## Interpretation {#sec-is-interpretation}
+
+Importance sampling turns sampling into weighting. When the proposal is good, it gives independent draws, transparent diagnostics and normalising constants. When the proposal is poor, the weights reveal the problem, with one important exception: infinite variance can remain invisible. In low-dimensional problems a well-chosen $t$ proposal around the mode is often excellent. In high-dimensional problems, IS is rarely viable on its own, but it is indispensable as a component: in SMC, in reweighting posterior draws, and in approximate cross-validation.
+
+## Limitations and common errors {#sec-is-errors}
+
+- **Light-tailed proposals** (normal proposals for $t$-like posteriors, or proposals narrower than the posterior): infinite variance, invisible in the ESS.
+- **Prior-as-proposal for informative data**: almost all weight on a few draws.
+- **The harmonic mean estimator** of the marginal likelihood: typically infinite variance.
+- **Forgetting that SNIS is biased**: the $O(1/N)$ bias can matter for small effective sample sizes.
+- **Resampling unnecessarily**: SIR adds noise. Use the weighted draws directly when possible.
+- **Computing weights on the natural scale**: overflow and underflow. Always use log weights and log-sum-exp.
+- **Confusing IS draws with MCMC draws**: IS draws must be used *with their weights*. Treating them as posterior draws is a serious error.
+
+## Chapter summary {#sec-is-summary}
+
+- IS estimates $\mathbb E_\pi[f]$ from draws of a proposal $g$ with weights $\pi/g$. SNIS (@eq-snis) needs only $\tilde\pi$ and is consistent with asymptotic variance $\mathbb E_g[w^2(f-\mu)^2]$ (@prp-is-basic).
+- Finite variance requires $\int\pi^2/g<\infty$, so proposals need heavier tails than the target (@prp-is-normal-variance). The optimal proposal is $\propto\lvert f\rvert\pi$ (@prp-optimal-is).
+- The ESS $1/\sum\bar w_i^2$ summarises weight quality. It degrades exponentially with dimension for a fixed per-coordinate mismatch, and it cannot detect infinite variance.
+- $\hat Z=\frac1N\sum\tilde w_i$ estimates normalising constants without bias. The harmonic mean estimator should be avoided.
+- IS and MCMC are complementary: reweighting MCMC draws, SIR, the independence sampler and SMC combine them, and SMC handles multimodality and estimates marginal likelihoods.
+
+## Exercises {#sec-is-exercises}
+
+::: {#exr-is-1}
+**[Mathematical ★]** Show that $\hat Z$ is unbiased for $Z$ but $\log\hat Z$ is biased for $\log Z$, and determine the sign of the bias.
+:::
+
+::: {#exr-is-2}
+**[Proof ★★]** Derive @eq-snis-variance directly by writing $\hat\mu_{\mathrm{SNIS}}-\mu=\frac{\frac1N\sum_i\tilde w_i(f_i-\mu)}{\frac1N\sum_i\tilde w_i}$ and applying Slutsky's theorem.
+:::
+
+::: {#exr-is-3}
+**[Mathematical ★★]** For a $\mathrm N(0,1)$ target and a $t_\nu$ proposal, show that $\mathbb E_g[w^2]<\infty$ for every $\nu>0$. For a $t_3$ target and a $\mathrm N(0,s^2)$ proposal, show that $\mathbb E_g[w^2]=\infty$ for every $s$.
+:::
+
+::: {#exr-is-4}
+**[R ★★]** Estimate $\mathbb P(\theta>4)$ for $\theta\sim\mathrm N(0,1)$ (exact value $3.17\times10^{-5}$) by (a) plain Monte Carlo with $10^5$ draws and (b) importance sampling from $\mathrm N(4,1)$ or from a shifted exponential $4+\mathrm{Exp}(4)$. Compare relative standard errors.
+:::
+
+::: {#exr-is-5}
+**[Simulation ★★]** Using the bioassay MCMC draws of @sec-mh-worked as proposal draws (they are approximately from the posterior), estimate the posterior mean of $\beta$ under the prior $\beta\sim\mathrm N(0,2.5^2)$ by reweighting. Compare with the importance-sampling answer of this chapter. What complication arises because the MCMC draws are dependent and unnormalised?
+:::
+
+::: {#exr-is-6}
+**[Simulation ★★]** For the conjugate model $y_i\sim\mathrm N(\theta,1)$, $\theta\sim\mathrm N(0,1)$, $n=20$, compute the exact $\log p(y)$ and compare it with (a) the prior-as-proposal estimator, (b) the harmonic mean estimator from exact posterior draws, and (c) a $t_4$ proposal fitted to the posterior, each with $10^4$ draws and 200 replications. Comment on the distributions of the three estimators.
+:::
+
+::: {#exr-is-7}
+**[Critique ★★]** A colleague reports an importance-sampling estimate with "ESS = 4200 out of 5000, so the estimate is reliable". What else would you check?
+:::
+
+::: {#exr-is-8}
+**[Research ★★★]** Implement annealed importance sampling [@neal2001annealed] for the bioassay model, with a geometric bridge from the prior to the posterior and Metropolis moves at each temperature. Compare the variance of its $\log Z$ estimate with that of plain IS from the prior, at equal computational cost.
+:::
+
+## Further reading {#sec-is-reading}
+
+- @robert2004monte, Section 3.3, @owen2013monte, Chapter 9, and @liu2004monte, Chapter 2: importance sampling theory and practice.
+- @kong1994sequential and @elvira2022rethinking: the effective sample size and its limitations.
+- @owen2000safe: defensive importance sampling.
+- @chatterjee2018sample: the sample size required in importance sampling, in terms of KL divergence.
+- @vehtari2024pareto: Pareto smoothing and diagnostics for importance weights.
+- @delmoral2006sequential, @chopin2002sequential and @chopin2020introduction: sequential Monte Carlo samplers.
+- @newton1994approximate and @gelman1998simulating: marginal likelihood estimation, including the problems of the harmonic mean estimator.
+
+## Solutions {#sec-is-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-is-1
+$\mathbb E[\hat Z]=\mathbb E_g[\tilde w]=Z$. Since $\log$ is strictly concave, Jensen's inequality gives $\mathbb E[\log\hat Z]<\log\mathbb E[\hat Z]=\log Z$ unless $\hat Z$ is constant. The bias is negative and, by the delta method, approximately $-\operatorname{Var}(\hat Z)/(2Z^2)=-\frac{\operatorname{Var}_g(w)}{2N}$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-is-2
+The numerator $\frac1N\sum\tilde w_i(f_i-\mu)$ has mean zero and variance $\frac1N\mathbb E_g[\tilde w^2(f-\mu)^2]$, so by the CLT $\sqrt N\times$numerator $\xrightarrow{d}\mathrm N(0,\mathbb E_g[\tilde w^2(f-\mu)^2])$. The denominator converges almost surely to $Z$. By Slutsky's theorem, $\sqrt N(\hat\mu-\mu)\xrightarrow{d}\mathrm N(0,\mathbb E_g[\tilde w^2(f-\mu)^2]/Z^2)=\mathrm N(0,\mathbb E_g[w^2(f-\mu)^2])$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-is-3
+$\pi^2/g$ for $\pi=\mathrm N(0,1)$ and $g=t_\nu$ behaves like $e^{-\theta^2}\lvert\theta\rvert^{\nu+1}$ in the tails, which is integrable. For $\pi=t_3$, $\pi^2\sim\lvert\theta\rvert^{-8}$, while $1/g$ for a normal $g$ grows like $e^{\theta^2/(2s^2)}$, so $\pi^2/g$ diverges and is not integrable for any $s$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-is-4
+(a) With $10^5$ draws, about 3 exceed 4, so the relative SE is $\sqrt{(1-p)/(Np)}\approx0.56$. (b) With $g=\mathrm N(4,1)$, $w(\theta)=e^{-4\theta+8}$ on $\theta>4$, and the relative SE from $10^5$ draws is about 0.005, roughly a hundredfold improvement. The shifted exponential $4+\mathrm{Exp}(4)$ is even better, because it matches the shape of the normal tail beyond 4 (the optimal proposal is the truncated normal itself).
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-is-5
+Weights are proportional to the prior ratio $\mathrm N(\beta\mid0,2.5^2)\mathrm N(\alpha\mid0,2.5^2)/\{\mathrm N(\beta\mid0,10^2)\mathrm N(\alpha\mid0,10^2)\}$, because the likelihood cancels. The estimate agrees with the IS answer within MCSE. Complication: the draws are autocorrelated, so the Kish ESS overstates the information, and the MCSE must account for both the weights and the dependence (for example by batch means applied to the weighted terms). The normalising constant of the MCMC "proposal" is unknown, but it cancels in self-normalisation.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-is-6
+The exact evidence is $\log p(y)=\log\mathrm N_{20}(y\mid0,I+\mathbf 1\mathbf 1^\top)$. (a) The prior-as-proposal estimator is unbiased but has large variance and a long right tail on the natural scale. On the log scale it is biased downwards for small $N$. (b) The harmonic mean estimator is strongly biased upwards and has erratic jumps across replications: its variance is infinite here because $\mathbb E_{\text{post}}[1/p(y\mid\theta)^2]$ diverges. (c) The fitted $t_4$ proposal gives estimates tightly concentrated around the truth. Plotting the 200 estimates of each makes the contrast obvious.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-is-7
+Check: (i) the proposal's tails against the target's, analytically, since a high ESS does not rule out infinite variance; (ii) the Pareto $\hat k$ diagnostic of the largest weights; (iii) stability across seeds and across sample sizes, since the estimate should not jump when $N$ is doubled; (iv) the maximum normalised weight; (v) agreement with an independent method such as MCMC on the same posterior; (vi) that the ESS is relevant to the *function* being estimated, since Kish's ESS ignores $f$.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-is-8
+AIS draws $\theta_0$ from the prior and, for $k=1,\dots,K$, multiplies the weight by $p(y\mid\theta_{k-1})^{b_k-b_{k-1}}$ and then moves $\theta_k\sim T_k(\theta_{k-1},\cdot)$, where $T_k$ leaves $\pi_{b_k}\propto p(y\mid\theta)^{b_k}\pi(\theta)$ invariant. The final weights average to $Z$ without bias. With $K\approx100$ temperatures and 200 particles, the variance of $\log\hat Z$ is orders of magnitude below plain prior IS at the same number of likelihood evaluations, because each incremental weight has small variance.
+:::

@@ -1,0 +1,90 @@
+# Notation and conventions {#sec-notation .unnumbered}
+
+The same symbols are used throughout the book. When a chapter departs from them, it says so.
+
+## General {#sec-notation-general}
+
+| Symbol | Meaning |
+|:--|:--|
+| $\mathbb R,\ \mathbb R^d,\ \mathbb N$ | real line, $d$-dimensional Euclidean space, $\{1,2,\dots\}$ |
+| $\log$ | natural logarithm |
+| $\mathbf 1\{A\}$ | indicator: 1 if $A$ holds, 0 otherwise |
+| $\lVert x\rVert$ | Euclidean norm |
+| $A^\top,\ A^{-1},\ \lvert A\rvert$ | transpose, inverse, determinant of a matrix |
+| $I_d$ | $d\times d$ identity matrix |
+| $\nabla f,\ \nabla^2 f$ | gradient and Hessian of $f:\mathbb R^d\to\mathbb R$ |
+| $a_n = O(b_n),\ o(b_n)$ | $\lvert a_n/b_n\rvert$ bounded, $\to 0$ |
+| $\xrightarrow{\text{a.s.}},\ \xrightarrow{d}$ | almost-sure convergence, convergence in distribution |
+| $\stackrel{\text{iid}}{\sim}$ | independent and identically distributed as |
+| $\propto$ | proportional to, as a function of the argument named in context |
+
+## Probability {#sec-notation-probability}
+
+| Symbol | Meaning |
+|:--|:--|
+| $(\Omega,\mathcal F,\mathbb P)$ | probability space |
+| $X, Y$ (upper case) | random variables; $x, y$ (lower case) their realised values |
+| $\mathbb E[X],\ \operatorname{Var}(X),\ \operatorname{Cov}(X,Y)$ | expectation, variance, covariance |
+| $\mathbb E_\pi[f]$ or $\pi(f)$ | $\int f(x)\,\pi(x)\,dx$, the expectation of $f$ under the density $\pi$ |
+| $p(\cdot)$ | a generic density or mass function, identified by its arguments |
+| $\phi,\ \Phi$ | standard normal density and distribution function |
+
+*Densities and masses.* A **density** is with respect to Lebesgue measure on $\mathbb R^d$ and a **mass function** is with respect to counting measure. Formulas that hold for both are written with integrals; for discrete variables, read the integrals as sums.
+
+## Bayesian models {#sec-notation-bayes}
+
+| Symbol | Meaning |
+|:--|:--|
+| $\theta\in\Theta\subseteq\mathbb R^d$ | unknown parameter (a random variable in the Bayesian model) |
+| $y=(y_1,\dots,y_n)$ | observed data; $y_{1:n}$ when the range matters |
+| $\tilde y$ | a future or replicated observation |
+| $p(y\mid\theta)$ | sampling model; as a function of $\theta$ for fixed $y$, the **likelihood** $L(\theta; y)$ |
+| $\pi(\theta)$ | prior density |
+| $\pi(\theta\mid y)$ | posterior density |
+| $p(y)=\int p(y\mid\theta)\pi(\theta)\,d\theta$ | marginal likelihood (evidence) |
+| $p(\tilde y\mid y)$ | posterior predictive distribution |
+| $\ell(\theta)=\log L(\theta;y)$ | log-likelihood |
+
+Strictly, a parameter and its value need separate symbols, but we write $\theta$ for both when context makes the meaning clear, as most of the literature does.
+
+## Monte Carlo and Markov chains {#sec-notation-mcmc}
+
+| Symbol | Meaning |
+|:--|:--|
+| $\pi$ on $\mathsf X$ | a generic **target** density on the state space $\mathsf X$ (often a posterior) |
+| $\tilde\pi$, $Z$ | an unnormalised target and its normalising constant: $\pi=\tilde\pi/Z$, $Z=\int\tilde\pi$ |
+| $X_t$ or $\theta_t$, $t=0,1,\dots$ | the state of a Markov chain at iteration $t$ |
+| $N$, $M$ | number of retained iterations per chain, number of chains |
+| $\theta^{(s)},\ s=1,\dots,S$ | draws from a distribution (independent or not) |
+| $P(x,A)$, $P(x,dy)$ | Markov transition kernel; $P^n$ its $n$-step kernel; $\pi P=\pi$ means $\pi$ is invariant |
+| $q(\theta'\mid\theta)$ | proposal density |
+| $\alpha(\theta,\theta')$ | Metropolis–Hastings acceptance probability |
+| $\widehat\mu_N=\frac1N\sum_{t=1}^N f(X_t)$ | Monte Carlo (or MCMC) estimator of $\mu=\mathbb E_\pi[f]$ |
+| $\gamma_k=\operatorname{Cov}_\pi\{f(X_0),f(X_k)\}$ | lag-$k$ autocovariance of a stationary chain; $\gamma_0=\operatorname{Var}_\pi(f)$ |
+| $\rho_k=\gamma_k/\gamma_0$ | lag-$k$ autocorrelation |
+| $\tau_f=1+2\sum_{k\ge1}\rho_k$ | integrated autocorrelation time |
+| $\sigma_f^2=\gamma_0\,\tau_f$ | asymptotic variance in the MCMC central limit theorem |
+| $\mathrm{ESS}=N/\tau_f$ | effective sample size |
+| $\widehat R$ | potential scale reduction factor (rank-normalised split version unless stated) |
+| $U(q)=-\log\pi(q)$, $K(p)$, $H=U+K$ | potential energy, kinetic energy, Hamiltonian (HMC) |
+| $\varepsilon$, $L$ | leapfrog step size and number of steps |
+
+## Distributions and parameterisations {#sec-notation-distributions}
+
+Parameterisations are fixed once and for all. They match R's density functions unless noted. Full densities, moments and R functions are listed in [Appendix A](../appendices/distributions.qmd).
+
+| Notation | Density or mass function | Support | R |
+|:--|:--|:--|:--|
+| $\mathrm N(\mu,\sigma^2)$ | $(2\pi\sigma^2)^{-1/2}\exp\{-(x-\mu)^2/(2\sigma^2)\}$ (**variance** $\sigma^2$) | $\mathbb R$ | `dnorm(x, mu, sigma)` |
+| $\mathrm N_d(\mu,\Sigma)$ | $(2\pi)^{-d/2}\lvert\Sigma\rvert^{-1/2}\exp\{-\tfrac12(x-\mu)^\top\Sigma^{-1}(x-\mu)\}$ | $\mathbb R^d$ | `dmvnorm_log()` (course code) |
+| $\mathrm{Beta}(a,b)$ | $x^{a-1}(1-x)^{b-1}/B(a,b)$ | $(0,1)$ | `dbeta(x, a, b)` |
+| $\mathrm{Gamma}(a,b)$ | $b^a x^{a-1}e^{-bx}/\Gamma(a)$ (shape $a$, **rate** $b$) | $(0,\infty)$ | `dgamma(x, a, rate = b)` |
+| $\mathrm{InvGamma}(a,b)$ | $b^a x^{-a-1}e^{-b/x}/\Gamma(a)$ (shape $a$, **scale** $b$) | $(0,\infty)$ | `dinvgamma_log()` (course code) |
+| $\mathrm{Exp}(\lambda)$ | $\lambda e^{-\lambda x}$ (**rate** $\lambda$) | $(0,\infty)$ | `dexp(x, lambda)` |
+| $\mathrm{Poisson}(\lambda)$ | $\lambda^k e^{-\lambda}/k!$ | $\{0,1,\dots\}$ | `dpois(k, lambda)` |
+| $\mathrm{Bin}(n,p)$ | $\binom nk p^k(1-p)^{n-k}$ | $\{0,\dots,n\}$ | `dbinom(k, n, p)` |
+| $t_\nu(\mu,\sigma)$ | location–scale Student $t$ with $\nu$ degrees of freedom | $\mathbb R$ | `dt_ls()` (course code) |
+| $\mathrm{Dir}(\alpha)$ | $\Gamma(\sum\alpha_k)\prod_k x_k^{\alpha_k-1}/\Gamma(\alpha_k)$ | simplex | `rdirichlet()` (course code) |
+| half-$\mathrm N(0,s)$ | $2\,\mathrm N(x\mid0,s^2)$ | $(0,\infty)$ | |
+
+When a Gamma or inverse-gamma distribution is used, always check whether the second parameter is a rate or a scale. Confusing the two is among the most common sources of wrong answers in applied Bayesian work.

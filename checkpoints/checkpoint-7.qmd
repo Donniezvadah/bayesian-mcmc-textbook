@@ -1,0 +1,100 @@
+# Checkpoint VII: Advanced and Research-Level Topics {#sec-checkpoint-7 .unnumbered}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+This final checkpoint is cumulative. It combines theory (@sec-mcmc-theory), specialised samplers (@sec-specialized), engineering (@sec-engineering) and approximate methods (@sec-frontiers) in the style of a qualifying examination: about three hours for Problems 1–4, written without notes, and a further day for the computational Problems 5–6. If you can solve these problems and explain your solutions to someone else, you are ready for the [capstone](../projects/capstone.qmd). If not, the cross-references show which chapters to revisit.
+
+## Problems {#sec-cp7-problems}
+
+**Problem 1 (theory, ★★★).** Let $P$ be the independence Metropolis–Hastings kernel with target $\pi$ and proposal $g$, and suppose $\pi(x)\le Mg(x)$ for all $x$.
+
+(a) Show that $P(x,A)\ge M^{-1}\pi(A)$ for all $x$ and measurable $A$.
+
+(b) Deduce that the chain is uniformly ergodic with $\|P^n(x,\cdot)-\pi\|_{\mathrm{TV}}\le(1-M^{-1})^n$.
+
+(c) Explain why the chain is *not* geometrically ergodic if $\pi/g$ is unbounded. (@sec-mcmc-theory)
+
+**Problem 2 (theory, ★★).** For a reversible chain with spectral gap $\gamma$ and a function $h$ with $\operatorname{Var}_\pi(h)=1$, show that the asymptotic variance satisfies $\sigma^2_h\le(2-\gamma)/\gamma$. Compute the bound for the AR(1) chain $X_{t+1}=\phi X_t+\sqrt{1-\phi^2}\varepsilon_t$, and compare it with the exact asymptotic variance of the sample mean. (@sec-mcmc-theory, @sec-mixing)
+
+**Problem 3 (methods, ★★).** For an equal mixture $\frac12\mathrm N(-\mu,1)+\frac12\mathrm N(\mu,1)$ with $\mu=6$:
+
+(a) Choose a geometric temperature ladder for parallel tempering such that adjacent tempered densities overlap substantially. Justify the number of rungs.
+
+(b) Explain why SMC tempering estimates the mixture weights correctly while a single random-walk chain does not. (@sec-specialized)
+
+**Problem 4 (approximate inference, ★★).** For the posterior $\mathrm N(0,\Sigma)$ with $\Sigma=\begin{pmatrix}4&3\\3&4\end{pmatrix}$:
+
+(a) Give the mean-field Gaussian VI solution, and the ratio of its marginal standard deviations to the true ones.
+
+(b) Explain what Pareto-$\hat k$ would indicate for importance sampling from that solution, and why. (@sec-frontiers)
+
+**Problem 5 (engineering, ★★★).** Design a test suite for `parallel_tempering()` containing:
+- one deterministic test;
+- three statistical tests with MCSE-based tolerances, whose combined false-failure probability under a correct implementation is below 0.1%;
+- one "mutation" test that would fail if the swap acceptance ratio used $\beta_k$ in place of $\beta_k-\beta_{k+1}$.
+
+Implement it with `testthat` and run it. (@sec-engineering)
+
+**Problem 6 (research reading, ★★★).** Choose one paper cited in @sec-frontiers or @sec-specialized. Write a two-page critical summary following the questions in @sec-front-reading, and reproduce one of its numerical results, or a simplified analogue, with the course code. Report Monte Carlo error.
+
+## Self-assessment before the capstone {#sec-cp7-readiness}
+
+Tick each item honestly. Any unticked item points to a chapter to revisit.
+
+- [ ] I can derive the Metropolis–Hastings acceptance probability from detailed balance, and prove that the kernel leaves $\pi$ invariant (@sec-mh).
+- [ ] I can derive the full conditionals for a hierarchical normal model and implement a Gibbs sampler (@sec-gibbs).
+- [ ] I can implement HMC, explain why leapfrog preserves volume and is reversible, and diagnose divergences (@sec-hmc).
+- [ ] I can compute and interpret rank-normalised $\widehat R$, bulk- and tail-ESS, and the MCSE of a quantile (@sec-diagnostics, @sec-mixing).
+- [ ] I can validate a sampler with simulation-based calibration and locate a bug from the rank histogram (@sec-validation).
+- [ ] I can choose between centred and non-centred parameterisations and justify the choice from the data (@sec-hierarchical).
+- [ ] I can compare models with PSIS-LOO, interpret Pareto $\hat k$, and explain when Bayes factors are and are not appropriate (@sec-model-comparison).
+- [ ] I can state conditions for a Markov chain CLT and explain what geometric ergodicity guarantees (@sec-mcmc-theory).
+- [ ] I can write tested, reproducible code with independent parallel random-number streams (@sec-engineering).
+- [ ] I can say what an approximate method targets, and check its distance from the posterior (@sec-frontiers).
+
+Completing the checklist indicates readiness, not mastery. Mastery is demonstrated by sustained independent work, for which the capstone is designed.
+
+## Solution outline {#sec-cp7-solutions}
+
+::: {.callout-tip collapse="true"}
+## Outline for Problem 1
+(a) From state $x$, the chain moves to $y\in A$ with density $g(y)\min\{1,\pi(y)g(x)/(\pi(x)g(y))\}=\min\{g(y),\pi(y)g(x)/\pi(x)\}$. Since $g(y)\ge\pi(y)/M$ and $g(x)/\pi(x)\ge1/M$, this density is at least $\pi(y)/M$. Integrating over $A$ gives $P(x,A)\ge M^{-1}\pi(A)$ (a staying probability only adds mass when $x\in A$).
+
+(b) The whole space is small with minorisation constant $M^{-1}$, so Doeblin's condition gives uniform ergodicity with rate $1-M^{-1}$ (@sec-mcmc-theory).
+
+(c) If $\pi/g$ is unbounded, then for $x$ with large $\pi(x)/g(x)$ the acceptance probability of every proposal is small: $\mathbb P(\text{move}\mid x)\le\int g(y)\pi(y)g(x)/(\pi(x)g(y))\,dy=g(x)/\pi(x)$, which tends to 0. The chain can get stuck for arbitrarily long periods, and @mengersen1996rates show that geometric ergodicity then fails.
+:::
+
+::: {.callout-tip collapse="true"}
+## Outline for Problem 2
+For a reversible chain, $\sigma^2_h=\int\frac{1+\lambda}{1-\lambda}\,dE_h(\lambda)$, where $E_h$ is the spectral measure of $h-\pi h$ with total mass 1 and support in $[-1,1-\gamma]$. The integrand is increasing in $\lambda$, so $\sigma^2_h\le(2-\gamma)/\gamma$. For the AR(1) chain the eigenvalues are $\phi^k$, $k\ge1$, so $\gamma=1-\phi$ (for $\phi>0$), and the bound is $(1+\phi)/(1-\phi)$. For $h(x)=x$ this equals the exact asymptotic variance, because $h$ lies entirely in the eigenspace with eigenvalue $\phi$: the bound is attained.
+:::
+
+::: {.callout-tip collapse="true"}
+## Outline for Problem 3
+(a) At inverse temperature $\beta$, each component of $\pi^\beta$ is approximately $\mathrm N(\pm\mu,1/\beta)$, so the barrier between modes is crossed easily once $\mu\sqrt\beta\lesssim1$, i.e. $\beta_{\min}\approx1/36$. Adjacent rungs overlap well if $\beta_{k+1}/\beta_k$ is not too small. For Gaussian-like targets the swap acceptance rate depends on the dimension and on the ratio $\beta_k/\beta_{k+1}$, deteriorating as $d$ grows unless the ratio approaches 1. In one dimension a ratio of about 3 is acceptable, so a geometric ladder from 1 to $1/36$ with four rungs (ratio $36^{1/3}\approx3.3$: $1,0.30,0.091,0.028$) is a reasonable start. Verify it by checking that every adjacent swap rate is well away from 0 (the @sec-specialized experiment found that a few rungs suffice).
+
+(b) SMC moves a population of particles through the tempered sequence, starting from the prior. The particles spread over both modes at small $\beta$, and the importance weights at each step account correctly for the relative mass of the modes, so the proportions of particles in the modes stay correct when the MH moves cannot cross. A single RWM chain at $\beta=1$ gives proportions determined by its starting point.
+:::
+
+::: {.callout-tip collapse="true"}
+## Outline for Problem 4
+(a) $\Lambda=\Sigma^{-1}=\frac17\begin{pmatrix}4&-3\\-3&4\end{pmatrix}$, so $1/\Lambda_{ii}=7/4$, and the mean-field standard deviations are $\sqrt{7}/2\approx1.32$ against the true 2: a ratio of $\sqrt{1-\rho^2}=\sqrt{7}/4\approx0.66$, with $\rho=0.75$.
+
+(b) Here $q=\mathrm N(0,\tfrac74I)$. Along $u_1=(x_1+x_2)/\sqrt2$ the target has variance 7 but $q$ only $7/4$, so the ratio $\pi/q$ is unbounded. Writing $u_2=(x_1-x_2)/\sqrt2$, $\log(\pi/q)=\frac3{14}(u_1^2-u_2^2)+\text{const}$ with $u_1,u_2$ independent $\mathrm N(0,\tfrac74)$ under $q$. Hence $\mathbb P(w>t)$ decays like $t^{-4/3}$, up to logarithmic factors. The weights have a Pareto tail with shape $k=3/4$: finite mean but infinite variance. PSIS estimates are close to 0.7 in practice (about 0.70 with $2\times10^5$ draws, because of the slowly varying factors), which is the threshold above which @yao2018yes regard the approximation as unreliable.
+:::
+
+::: {.callout-tip collapse="true"}
+## Outline for Problem 5
+- *Deterministic*: wrong inputs (non-decreasing ladder, $\beta_1\ne1$) raise errors, and the output dimensions are correct.
+- *Statistical*: for a mixture with known weights, (i) the proportion of draws in the right-hand mode, (ii) the mean of $X^2$ and (iii) a tail probability, each compared with the truth within $k$ MCSEs computed with `mcse_mean()`. With three checks, a false-failure rate below $10^{-3}$ needs $\alpha<3.3\times10^{-4}$ per check, i.e. $k\ge3.6$; use $k=4$ (@prp-suite-error).
+- *Mutation*: implement the swap with the wrong exponent in a copy, and show that the mode-weight test fails for it with high probability. This demonstrates the test's power.
+:::
+
+::: {.callout-tip collapse="true"}
+## Outline for Problem 6
+A good summary states the target and the assumptions, separates proved from demonstrated claims, reproduces a result with a measured MCSE, and identifies at least one scenario (geometry, dimension, tuning) not covered by the paper where the method might fail. Assessment follows the capstone rubric criteria for correctness, validation and communication ([capstone](../projects/capstone.qmd)).
+:::

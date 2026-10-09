@@ -1,0 +1,6 @@
+# References {.unnumbered}
+
+All references were checked against Crossref, arXiv, publisher pages or library catalogues; the verification script and its report are in `scripts/` in the repository.
+
+::: {#refs}
+:::

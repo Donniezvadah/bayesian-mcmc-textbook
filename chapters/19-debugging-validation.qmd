@@ -1,0 +1,353 @@
+# Debugging and Validating MCMC {#sec-validation}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Learning objectives
+
+After this chapter you should be able to:
+
+1. classify the errors that afflict Bayesian computations (model, code, sampler, numerical, convergence and reporting errors) and match each to a test that can detect it;
+2. test samplers on targets with known answers, using tolerances based on Monte Carlo standard errors;
+3. state and prove the rank-uniformity theorem behind simulation-based calibration (SBC), and run SBC for a sampler;
+4. assess parameter recovery and the frequentist coverage of credible intervals on simulated data;
+5. find and avoid numerical overflow and underflow;
+6. diagnose poor exploration and multimodality;
+7. organise a computation so that it can be reproduced and independently validated.
+:::
+
+::: {.callout-tip appearance="simple"}
+## Prerequisites
+
+@sec-r-testing (testing statistical code), @sec-bayes-interpretations (@prp-prior-coverage), @sec-diagnostics, @sec-mixing.
+:::
+
+## Motivation {#sec-val-motivation}
+
+A sampler with a bug usually still runs. Its traces can look stationary, its $\widehat R$ can be 1.00 and its ESS large, and its output can be plausible. Diagnostics of Part V check whether a chain has converged *to the distribution the code defines*. They cannot check whether that distribution is the intended posterior. Errors in deriving full conditionals, transcribing a likelihood, handling a Jacobian or parameterising a distribution are invisible to convergence diagnostics. This chapter develops validation methods that compare the computation with *independently known truth*: exact results, data simulated from the model, and independent implementations [@cook2006validation; @talts2018validating; @gelman2020bayesian].
+
+## Definitions and notation {#sec-val-definitions}
+
+::: {#def-validation-terms}
+## Verification and validation
+**Verification** asks whether the code computes what the mathematics specifies: the log density, gradient and kernel are correct. **Validation** asks whether the whole pipeline (model, priors, sampler, post-processing) produces correct posterior inferences. **Parameter recovery** checks, on data simulated from known parameter values, whether the posterior concentrates near those values. **Calibration** checks whether posterior probability statements have their claimed frequency properties when parameters are drawn from the prior.
+:::
+
+**A taxonomy of errors**, with the test that targets each:
+
+| Error | Example | Detected by |
+|:--|:--|:--|
+| Model specification | wrong likelihood family, implausible prior | prior and posterior predictive checks (@sec-priors, @sec-prediction) |
+| Transcription | sign error, missing term, wrong parameterisation (rate vs scale) | unit tests against an independent implementation; SBC |
+| Jacobian | sampling $\log\sigma$ without the log-Jacobian | SBC; comparison with known targets |
+| Derivation | wrong full conditional | grid comparison of each conditional; SBC |
+| Gradient | wrong analytic gradient (HMC) | finite-difference checks; low acceptance |
+| Sampler logic | missing Hastings correction, recording only accepted draws | exact transition-matrix tests; known targets |
+| Numerical | underflow, overflow, catastrophic cancellation | extreme-input unit tests; `NaN`/`Inf` checks |
+| Convergence | stuck chains, metastability | multiple chains, $\widehat R$, ESS (@sec-diagnostics) |
+| Reporting | MCSE ignored, too many digits | MCSE for every summary (@sec-mixing) |
+: Error types and the checks that target them. {#tbl-error-taxonomy}
+
+## Mathematical development {#sec-val-development}
+
+### Tests against known answers {#sec-val-known}
+
+The simplest validation runs the sampler on a target whose answer is known: a Gaussian, a conjugate posterior, a distribution with closed-form moments. Then it checks that estimates agree with the truth within Monte Carlo error. Three principles make such tests informative:
+
+1. **Use MCSE-based tolerances.** Require $\lvert\hat\mu-\mu\rvert\le k\cdot\mathrm{MCSE}$ with $k\approx4$ (`expect_within_mcse()`), using an MCSE that accounts for autocorrelation. A fixed absolute tolerance is either flaky or toothless (@exr-r-9).
+2. **Test several functionals**: means, variances, tail probabilities, cross-moments. A sampler can get the mean right and the variance wrong, as the independence sampler with a light-tailed proposal did in @sec-mh-experiment.
+3. **Test hard cases**: boundaries of the support, strong correlation, heavy tails and extreme starting values. The course's test suite does all of this (`tests/testthat/`).
+
+For finite state spaces, invariance can be tested *exactly* by computing the transition matrix (`mh_transition_matrix()`), which removes Monte Carlo error from the test altogether.
+
+### Simulation-based calibration {#sec-val-sbc}
+
+Known-answer tests use targets chosen for convenience. **Simulation-based calibration** tests the actual model and sampler, over the whole range of data sets the model can generate.
+
+::: {#thm-sbc}
+## Rank uniformity
+Let $\theta^\ast\sim\pi(\theta)$, $y\sim p(y\mid\theta^\ast)$, and, given $y$, let $\theta_1,\dots,\theta_L$ be independent draws from the posterior $\pi(\theta\mid y)$. For a scalar function $f$ with a continuous distribution, let $r=\#\{l:f(\theta_l)<f(\theta^\ast)\}$. Then $r$ is uniformly distributed on $\{0,1,\dots,L\}$.
+:::
+
+::: {.proof}
+Under the joint distribution of $(\theta^\ast,y)$, the conditional distribution of $\theta^\ast$ given $y$ is the posterior $\pi(\theta\mid y)$ (@thm-bayes). Given $y$, the posterior draws $\theta_1,\dots,\theta_L$ are independent of $\theta^\ast$ and have the same distribution. So, conditionally on $y$, the $L+1$ values $f(\theta^\ast),f(\theta_1),\dots,f(\theta_L)$ are independent and identically distributed, hence exchangeable. With continuous $f$ there are no ties almost surely, so each of the $(L+1)!$ orderings is equally likely, and the position of $f(\theta^\ast)$ in the ordering, which is $r$, is uniform on $\{0,\dots,L\}$. This holds for every $y$, hence unconditionally.
+:::
+
+[@talts2018validating; @cook2006validation]. The test therefore repeats the following steps $S$ times: draw $\theta^\ast$ from the prior, simulate data, run the sampler, compute the rank. The resulting histogram of ranks should be uniform. Departures have recognisable shapes:
+
+- **∪-shaped** (too many extreme ranks): posterior draws are too concentrated, so the posterior is overconfident, or the sampler mixes too little;
+- **∩-shaped**: posterior too wide;
+- **sloped**: posterior biased (systematically too high or too low).
+
+Three practical points:
+
+1. **Independence of the $L$ draws.** The theorem assumes independent posterior draws. Autocorrelated MCMC draws produce non-uniform ranks even for a correct sampler. Thin the chain so that the $L$ retained draws are approximately independent (keep about $L$ draws spread over a run whose ESS is at least $L$) [@talts2018validating]. This is one of the few legitimate uses of thinning.
+2. **Power.** SBC detects errors that change the posterior noticeably for typical data sets. Errors that affect only rare data sets, or only functionals not tested, can pass. Test several functions $f$, including the log likelihood, and use many simulations.
+3. **What a pass means.** Uniform ranks show that the computed posterior is consistent with the model *as specified*, averaged over the prior. They say nothing about whether the model fits real data (that is the job of predictive checks) or about data sets very different from those the prior generates.
+
+Formal assessment uses a $\chi^2$ test on binned ranks (`sbc_uniformity_test()`) or simultaneous confidence bands for the empirical CDF of the ranks [@sailynoja2022graphical]. A histogram with a binomial band (`sbc_plot()`) is usually informative enough.
+
+### Parameter recovery and coverage {#sec-val-recovery}
+
+**Parameter recovery** simulates data from fixed, scientifically plausible parameter values $\theta^\ast$, fits the model, and checks that the posterior concentrates around $\theta^\ast$. As the sample size grows it should concentrate more tightly. Recovery is weaker than SBC, because it examines a few chosen values and is subject to prior-induced bias in small samples, but it is cheap and checks the regime that matters for the application.
+
+**Coverage.** By @prp-prior-coverage, central $100(1-\alpha)\%$ credible intervals cover $\theta^\ast$ in exactly a fraction $1-\alpha$ of simulations *when $\theta^\ast$ is drawn from the prior*. At fixed $\theta^\ast$, coverage can legitimately differ from nominal (@sec-bayes-experiment), so coverage at fixed values is a diagnostic of prior influence rather than a test of correctness. Coverage averaged over the prior is a correctness test, and a coarser cousin of SBC.
+
+### Numerical stability {#sec-val-numerics}
+
+Common numerical failures and their fixes:
+
+- **Underflow of likelihoods**: sums of log densities, never products of densities (@sec-math-logscale).
+- **Overflow in exponentials**: `exp(800)` is `Inf`. Use `log1pexp()`, `log_sum_exp()` and `plogis(x, log.p = TRUE)`.
+- **Cancellation**: $\log(1-p)$ for tiny $p$ is `log1p(-p)`; $1-e^{-a}$ for tiny $a$ is `-expm1(-a)`.
+- **Ill-conditioned linear algebra**: Cholesky solves rather than inverses (@sec-math-cholesky). Add a small jitter only with justification.
+- **Boundary values**: densities at the edge of the support (e.g. $\sigma\to0$), and gradients that blow up there. Test log densities at extreme inputs and check for `NaN`.
+- **Silent `NaN` propagation**: a `NaN` acceptance ratio compared with $\log u$ gives `NA` in R, which can crash or be mishandled. `eval_log_density()` converts `NaN` log densities to $-\infty$ (rejection) and stops on $+\infty$.
+
+### Diagnosing poor exploration and multimodality {#sec-val-multimodality}
+
+When diagnostics flag problems, or validation fails only for some data sets, examine the posterior's geometry:
+
+1. **Run many chains from widely dispersed starting points**, for example from optimisations started at random points. Look at *per-chain* summaries and log-density traces. Chains that settle at different log-density levels indicate distinct modes.
+2. **Inspect pairs plots** of the parameters involved. Funnels, ridges, banana shapes and separated clusters are visible in two-dimensional projections.
+3. **Check identifiability**: label switching in mixtures, sign ambiguities ($\tau$ and $-\tau$ in @sec-gibbs-worked-hier) and other symmetries produce genuine, equivalent modes. These are handled by constraints or by summarising only identified quantities.
+4. **Use samplers designed for multimodality** where modes are real and distinct (@sec-specialized), and validate them with SBC.
+
+### Reproducibility and independent validation {#sec-val-reproducibility}
+
+A computation is **reproducible** if another person, given the code, data and a description of the environment, can rerun it and obtain the same results up to Monte Carlo error [@peng2011reproducible; @sandve2013ten]. Requirements: version-controlled code; recorded package versions (`sessionInfo()`, `renv`); seeds set at the top level; raw data kept unmodified, with scripted preprocessing; and reported MCSEs, so that "the same results" has a quantitative meaning.
+
+**Independent validation** goes further: re-derive the model's key quantities by a different route (a grid in low dimensions, a different sampler, a different software implementation such as Stan) and compare. Agreement between two independently written implementations is strong evidence of correctness, because the same bug rarely appears in both. Throughout this book, educational samplers are compared with Stan (`stan/README.md`) and with exact or grid answers for exactly this reason.
+
+## Worked example: catching bugs with simulation-based calibration {#sec-val-worked}
+
+The model is the semi-conjugate normal model of @prp-semiconjugate-normal with $n=10$ observations, prior $\mu\sim\mathrm N(0,2^2)$ and $\sigma^2\sim\mathrm{InvGamma}(3,2)$. We validate three Gibbs samplers:
+
+- **correct**: `gibbs_normal()`;
+- **bug A**: in the $\sigma^2$ update, the factor $\frac12$ in the inverse-gamma scale is dropped, i.e. $b_0+\sum(y_i-\mu)^2$ instead of $b_0+\frac12\sum(y_i-\mu)^2$. This is a classic transcription error;
+- **bug B**: the $\mu$ update passes the conditional *variance* $1/(1/v_0+n/\sigma^2)$ to `rnorm()`, which expects a *standard deviation*. This is perhaps the most common parameterisation error in R.
+
+```{r}
+#| label: val-sbc-setup
+n_obs <- 10; m0 <- 0; v0 <- 4; a0 <- 3; b0 <- 2
+gibbs_buggy <- function(y, n_iter, bug) {
+  n <- length(y); ybar <- mean(y); mu <- ybar; s2 <- var(y); out <- matrix(NA, n_iter, 2)
+  for (i in seq_len(n_iter)) {
+    prec <- 1 / v0 + n / s2
+    mean_mu <- (m0 / v0 + n * ybar / s2) / prec
+    mu <- rnorm(1, mean_mu, if (bug == "B") 1 / prec else sqrt(1 / prec))   # bug B: variance as sd
+    scale <- if (bug == "A") b0 + sum((y - mu)^2) else b0 + 0.5 * sum((y - mu)^2)
+    s2 <- rinvgamma(1, a0 + n / 2, scale)
+    out[i, ] <- c(mu, s2)
+  }
+  out
+}
+posterior_ranks <- function(sampler, n_sims = 500, L = 99, thin = 3) {
+  t(replicate(n_sims, {
+    mu_star <- rnorm(1, m0, sqrt(v0)); s2_star <- rinvgamma(1, a0, b0)
+    y <- rnorm(n_obs, mu_star, sqrt(s2_star))
+    draws <- sampler(y, 100 + L * thin)[100 + seq_len(L) * thin, ]      # warm-up 100, then thin
+    c(mu = sum(draws[, 1] < mu_star), sigma2 = sum(draws[, 2] < s2_star))
+  }))
+}
+set.seed(1901)
+ranks <- list(
+  correct = posterior_ranks(function(y, n) gibbs_normal(y, n, m0 = m0, v0 = v0, a0 = a0, b0 = b0)),
+  bug_A = posterior_ranks(function(y, n) gibbs_buggy(y, n, "A")),
+  bug_B = posterior_ranks(function(y, n) gibbs_buggy(y, n, "B")))
+t(sapply(ranks, function(r) c(p_mu = sbc_uniformity_test(r[, "mu"], 99)$p_value,
+                              p_sigma2 = sbc_uniformity_test(r[, "sigma2"], 99)$p_value)))
+```
+
+```{r}
+#| label: fig-val-sbc
+#| fig-cap: "SBC rank histograms (20 bins, 500 simulated data sets) for $\\sigma^2$ (top) and $\\mu$ (bottom) under the correct sampler and two buggy samplers. The grey band is the 99% range for each bin under uniformity. Bug A shifts $\\sigma^2$ upwards, so the true value tends to fall low among the posterior draws (pile-up at low ranks); bug B (variance passed as standard deviation) makes the posterior of $\\mu$ too narrow, giving a ∪-shape."
+#| fig-height: 4.6
+par(mfrow = c(2, 3), mar = c(3.5, 3.5, 2, 0.5))
+for (v in c("sigma2", "mu")) for (nm in names(ranks)) sbc_plot(ranks[[nm]][, v], 99, n_bins = 20, main = paste(nm, "-", v))
+```
+
+Each bug is detected by the parameter it affects, with p-values orders of magnitude below any reasonable threshold. Bug A also shifts the ranks of $\mu$, through the dependence of $\mu$'s full conditional on $\sigma^2$. The correct sampler gives uniform ranks for both parameters. Bug A inflates the posterior of $\sigma^2$, so the true value lands among the *lower* ranks. Bug B shrinks the posterior standard deviation of $\mu$ from $\sqrt{v}$ to $v$, where $v<1$ is the conditional variance, which makes the posterior overconfident: the true value falls outside the bulk of the draws too often, at both ends.
+
+Not every bug is caught. Dropping the prior precision $1/v_0$ from the $\mu$ update, also a genuine error, gives a p-value of about 0.3 for $\mu$ in the same experiment (@exr-val-8 asks you to reproduce this). With $v_0=4$ and ten observations, the prior contributes only a few percent of the posterior precision, so the bug barely changes the posterior. This illustrates the limited power of SBC: it finds errors in proportion to how much they change the posterior for data sets typical under the prior. Errors that matter only in other regimes (strong priors, tiny samples) need targeted tests.
+
+None of these bugs would be found by convergence diagnostics. Each buggy sampler converges, quickly, to the wrong distribution.
+
+**A missing Jacobian.** Consider $y_i\mid\sigma\sim\mathrm N(0,\sigma^2)$, $n=5$, with prior $\sigma\sim\text{half-}\mathrm N(0,1)$, sampled by random-walk Metropolis on $\eta=\log\sigma$. The correct log target is $\sum_i\log\mathrm N(y_i\mid0,e^{2\eta})+\log\text{half-}\mathrm N(e^\eta)+\eta$. The buggy version omits $+\eta$:
+
+```{r}
+#| label: val-jacobian
+log_target_eta <- function(eta, y, jacobian) {
+  s <- exp(eta)
+  sum(dnorm(y, 0, s, log = TRUE)) + log(2) + dnorm(s, 0, 1, log = TRUE) + if (jacobian) eta else 0
+}
+sbc_jacobian <- function(jacobian, n_sims = 400, L = 99, thin = 5) {
+  replicate(n_sims, {
+    s_star <- abs(rnorm(1)); y <- rnorm(5, 0, s_star)
+    out <- metropolis_hastings(function(e) log_target_eta(e, y, jacobian), log(sd(y) + 0.1), 200 + L * thin, 1.2)
+    sum(exp(out$draws[200 + seq_len(L) * thin]) < s_star)
+  })
+}
+set.seed(1902)
+c(p_with_jacobian = sbc_uniformity_test(sbc_jacobian(TRUE), 99)$p_value,
+  p_without_jacobian = sbc_uniformity_test(sbc_jacobian(FALSE), 99)$p_value)
+```
+
+The missing Jacobian changes the prior on $\sigma$ from half-normal to something proportional to half-normal$/\sigma$, which puts more mass near zero. SBC detects it.
+
+## R implementation {#sec-val-r}
+
+The SBC functions are in `R/diagnostics/diagnostics.R` (`sbc_ranks()`, `sbc_uniformity_test()`, `sbc_plot()`; see @sec-diag-r). The test helper `expect_within_mcse()` is in `tests/testthat/helper-course.R`:
+
+```{r}
+#| file: tests/testthat/helper-course.R
+#| eval: false
+```
+
+A practical **validation checklist** for a new model and sampler:
+
+1. Unit-test the log density against an independent computation (e.g. summing `dnorm()` terms) at several parameter values, including extremes.
+2. Check gradients against finite differences.
+3. Check each full conditional (Gibbs) against the joint on a grid.
+4. Run the sampler on a version of the model with a known answer (conjugate special case, or an exactly computable small instance).
+5. Run SBC for all parameters and for the log likelihood.
+6. Run parameter recovery at scientifically plausible values and sample sizes.
+7. Only then fit the real data, with multiple chains and full diagnostics.
+
+## Computational experiment: recovery and coverage {#sec-val-experiment}
+
+We check parameter recovery and prior-averaged coverage for a logistic regression with three coefficients and $n=200$ observations, fitted by HMC with a short warm-up. Parameters are drawn from the $\mathrm N(0,1)$ prior used in the fit, and each fit uses four chains.
+
+```{r}
+#| label: val-coverage
+set.seed(1903)
+cover <- t(replicate(40, {
+  beta_star <- rnorm(3)
+  X <- cbind(1, matrix(rnorm(400), 200, 2))
+  y <- rbinom(200, 1, inv_logit(X %*% beta_star))
+  m <- logistic_regression_model(X, y, prior_sd = 1)
+  dr <- do.call(rbind, lapply(1:4, function(k) {
+    wu <- hmc_warmup(m$log_density, m$grad, rnorm(3, 0, 0.5), 200, n_steps = 8)
+    hmc_sampler(m$log_density, m$grad, wu$position, 500, wu$step_size, 8)$draws
+  }))
+  lo <- apply(dr, 2, quantile, 0.05); hi <- apply(dr, 2, quantile, 0.95)
+  c(covered = beta_star >= lo & beta_star <= hi, error = colMeans(dr) - beta_star)
+}))
+c(coverage_90 = mean(cover[, 1:3]), mcse = sqrt(0.09 / (40 * 3)),
+  rmse = sqrt(mean(cover[, 4:6]^2)))
+```
+
+Averaged over the prior, the 90% intervals cover the true coefficients at close to the nominal rate, within the Monte Carlo error of 40 replications × 3 coefficients. The root-mean-square error of the posterior means shows how precisely 200 binary observations determine the coefficients. This experiment is cheap enough to run routinely before a real analysis.
+
+## Diagnostics and validation {#sec-val-validation}
+
+This chapter *is* about validation. Its own claims are checked by the tests in `tests/testthat/test-diagnostics.R`. These verify that SBC ranks are uniform for an exact conjugate posterior, and that a deliberately overconfident posterior (data counted twice) is detected with p-value below 0.001.
+
+## Interpretation {#sec-val-interpretation}
+
+Validation results should be reported alongside the analysis: "the sampler passed simulation-based calibration for all parameters (500 simulations, $L=99$); parameter recovery at the estimated values showed no bias beyond Monte Carlo error." Such statements give readers grounds to trust a computation that convergence diagnostics alone cannot provide.
+
+## Limitations and common errors {#sec-val-errors}
+
+- **Relying on convergence diagnostics for correctness.** They test convergence to *the coded distribution*.
+- **SBC with autocorrelated draws**: thin to approximately independent draws, or the ranks will look ∪-shaped for a correct sampler.
+- **Too few SBC simulations** to detect moderate errors, or testing only some parameters.
+- **Recovery at a single parameter value**, which can miss errors that only matter elsewhere, or which can be confounded with legitimate prior shrinkage.
+- **Validating on data sets unlike the real one** (different sample size or regime).
+- **Testing only what is easy**: means of well-behaved parameters, not variance components, tail probabilities or derived quantities.
+
+## Chapter summary {#sec-val-summary}
+
+- Errors in Bayesian computation are of several kinds (@tbl-error-taxonomy), and convergence diagnostics detect only one of them.
+- Known-answer tests with MCSE-based tolerances and exact transition-matrix tests verify samplers.
+- Simulation-based calibration tests the whole pipeline: ranks of prior draws among posterior draws are uniform for a correct computation (@thm-sbc). Thinning to near-independence is required.
+- Parameter recovery and prior-averaged coverage give complementary checks.
+- Numerical stability requires log-scale computation, careful special functions and attention to boundaries.
+- Reproducibility and independent reimplementation complete the validation of a computational result.
+
+## Exercises {#sec-val-exercises}
+
+::: {#exr-val-1}
+**[Proof ★]** Extend @thm-sbc to discrete $f$ by defining a randomised rank: break ties uniformly at random. Show that the randomised rank is uniform.
+:::
+
+::: {#exr-val-2}
+**[Conceptual ★★]** Explain why a sampler that ignores the data entirely, returning draws from the prior, passes SBC perfectly. What does this imply about what SBC tests, and which additional check catches this "bug"?
+:::
+
+::: {#exr-val-3}
+**[Simulation ★★]** Run SBC for the correct `gibbs_normal()` sampler *without* thinning ($L=99$ consecutive draws). Describe the rank histogram for $\mu$ and $\sigma^2$ and explain the shape. Then thin by 1, 3 and 10 and find the smallest thinning that gives approximately uniform ranks.
+:::
+
+::: {#exr-val-4}
+**[R ★★]** Introduce a sign error in the gradient of `logistic_regression_model()` (e.g. return `crossprod(X, inv_logit(eta) - y)` for the likelihood part). Which of these detect it: (a) finite-difference gradient checks, (b) HMC acceptance rate, (c) $\widehat R$, (d) SBC? Explain each result.
+:::
+
+::: {#exr-val-5}
+**[Simulation ★★]** For the eight-schools model, run SBC for $\tau$ with the *centred* Gibbs sampler and with the *non-centred* sampler (@sec-gibbs-worked-hier), each with a fixed number of iterations per simulated data set. Does the centred sampler's poor mixing show up in SBC? Why or why not?
+:::
+
+::: {#exr-val-6}
+**[Critique ★★]** A software package's documentation states: "Our sampler is validated: on 10 benchmark data sets its posterior means agree with Stan's to two decimal places." What does this validation establish and what does it leave untested?
+:::
+
+::: {#exr-val-7}
+**[Research ★★★]** The power of SBC depends on the test quantities used. Implement SBC with three test quantities for the normal model: $\mu$, $\sigma^2$ and the log likelihood of the simulated data evaluated at each draw. Construct a bug that changes the joint posterior but not the marginals of $\mu$ or $\sigma^2$ (for example, an incorrect *correlation* between them), and show which test quantity detects it.
+:::
+
+::: {#exr-val-8}
+**[Simulation ★★]** Implement the bug "drop the prior precision $1/v_0$ from the $\mu$ update" in `gibbs_buggy()` and run SBC as in the worked example. Then repeat with a much more informative prior, $v_0=0.05$. Explain why the bug is invisible in the first case and obvious in the second.
+:::
+
+## Further reading {#sec-val-reading}
+
+- @cook2006validation and @talts2018validating: validation of Bayesian software by posterior quantiles and simulation-based calibration.
+- @sailynoja2022graphical: graphical uniformity tests for SBC ranks.
+- @gelman2020bayesian: validation within the Bayesian workflow, including fake-data simulation.
+- @morris2019using: design and reporting of simulation studies.
+- @wilson2014best, @sandve2013ten and @peng2011reproducible: reproducible computational research.
+
+## Solutions {#sec-val-solutions}
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-val-1
+Given $y$, the values $f(\theta^\ast),f(\theta_1),\dots,f(\theta_L)$ are i.i.d. Attach independent $\mathrm U(0,1)$ labels to each and order lexicographically by $(f,\text{label})$. The labels make all values distinct, and the pairs are still i.i.d., so all orderings are equally likely and the position of $\theta^\ast$ is uniform. The randomised rank is the number of draws with $f<f(\theta^\ast)$ plus a uniformly chosen number of the tied draws.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-val-2
+If the sampler returns prior draws, then $\theta^\ast$ and $\theta_1,\dots,\theta_L$ are all independent prior draws, hence exchangeable, and the ranks are uniform. SBC tests *self-consistency* with the joint model, and the prior is a self-consistent answer in a trivial sense, since it is the posterior averaged over data. The bug is caught by parameter recovery (the posterior does not concentrate as $n$ grows) and by checking that posterior intervals are narrower than prior intervals when the data are informative. SBC should always be combined with such checks [@talts2018validating].
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-val-3
+Consecutive autocorrelated draws cluster together, so the $L$ draws behave like fewer independent ones and the empirical spread of the rank distribution is wrong. Typically the histogram is ∪-shaped: the cluster of draws is often entirely above or entirely below $\theta^\ast$. In this nearly independent Gibbs sampler the effect is mild for $\mu$ and more visible for $\sigma^2$. Thinning by about $\tau_f$ (2–3 here) suffices for approximate uniformity.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-val-4
+(a) The finite-difference check fails immediately, so it is the direct test. (b) The HMC acceptance rate collapses: trajectories driven by the wrong force do not conserve the correct Hamiltonian. Dual averaging shrinks the step size to compensate, so the warm-up output is still valid but very inefficient. (c) $\widehat R$ may be fine or slightly inflated: it detects only poor mixing. (d) SBC passes if the sampler still targets the correct posterior, which it does, since the acceptance step uses the correct log density, provided the run is long enough. A wrong gradient is an *efficiency* bug, not a *correctness* bug, which is why gradients must be unit-tested.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-val-5
+With enough iterations per data set, both samplers pass, because both are correct. With few iterations, the centred sampler's poor mixing at small $\tau$ shows up as non-uniform ranks for $\tau$, typically too few low ranks when the true $\tau$ is small, because the chain has not yet reached the neck. SBC thus also detects *insufficient convergence* for the sampler settings tested, which is useful: it validates the sampler *as run*, with its run length.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-val-6
+Agreement of means with Stan on 10 data sets establishes that the two samplers agree on central summaries for those data sets. Untested: posterior variances, tails and quantiles; other models and data regimes (small samples, hard geometries); whether the agreement holds beyond two decimals given the MCSEs; and calibration over the prior (SBC). Also, if both use the same model code and that code has a transcription error, they agree on the wrong answer.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-val-8
+With $v_0=4$ the posterior precision of $\mu$ is $1/v_0+n/\sigma^2\approx0.25+10$, so omitting $0.25$ changes the posterior standard deviation by about 1% and the mean by a negligible amount. The rank distribution is indistinguishable from uniform with 500 simulations. With $v_0=0.05$ the prior precision (20) dominates the data precision (about 10), so dropping it makes the posterior far too wide and centred on $\bar y$ instead of shrunk towards $m_0$, and SBC shows a strong ∩-shape. SBC's power depends on the prior: test the regimes in which the analysis will actually be used.
+:::
+
+::: {.callout-tip collapse="true"}
+## Solution to @exr-val-7
+Example bug: draw $\mu$ and $\sigma^2$ *independently* from their exact marginal posteriors (each correct), destroying their posterior dependence. The marginal ranks of $\mu$ and $\sigma^2$ are uniform, so SBC on those quantities passes. The log likelihood $\sum_i\log\mathrm N(y_i\mid\mu,\sigma^2)$ depends on both jointly, and its ranks are non-uniform. Joint test quantities increase the power of SBC [@talts2018validating].
+:::

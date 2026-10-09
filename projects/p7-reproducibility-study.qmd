@@ -1,0 +1,209 @@
+# Project 7: Research-Style Reproducibility Study {#sec-project-7 .unnumbered}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Project at a glance
+
+**Prerequisites:** the whole book, especially @sec-priors, @sec-prediction, @sec-validation, @sec-model-comparison and @sec-engineering.
+**Effort:** about 30–40 hours.
+**Deliverable:** a public (or shareable) repository containing data, code, a lockfile, tests and a technical report (about 15 pages) that rebuilds from one command.
+**Skills:** the complete Bayesian workflow [@gelman2020bayesian], from scientific question to reproducible report.
+:::
+
+This project has two parts. **Part A** is a worked exemplar: a compact research-style analysis of the classic coal-mining disasters data, showing every step at the level of rigour expected. **Part B** is your own study, on a question and data set of your choice, following the same steps and the reproducibility checklist.
+
+## Part A: an exemplar study {#sec-p7-exemplar}
+
+### 1. Scientific question {#sec-p7-question}
+
+Did the rate of coal-mining explosions with 10 or more deaths change abruptly in the late nineteenth century, and if so, when and by how much? The question was studied with Bayesian changepoint models by @raftery1986bayesian and @carlin1992hierarchical.
+
+### 2. Data {#sec-p7-data}
+
+`boot::coal` gives the dates of 191 explosions in coal mines that resulted in 10 or more fatalities, from 15 March 1851 to 22 March 1962. It was compiled by @jarrett1979note, as given in @hand1994handbook and distributed with the `boot` package [@davison1997bootstrap] (licence "Unlimited"). The dates are recorded as decimal years.
+
+**Preprocessing.** We count disasters per calendar year, 1851–1962 (112 years). The first and last years are only partly observed, because the record runs from the first to the last disaster. We therefore include an **exposure** $e_t$, the fraction of year $t$ observed: $e_{1851}\approx0.80$ and $e_{1962}\approx0.22$, with $e_t=1$ otherwise. Defining the observation window by the first and last events is a simplification, which we record as a limitation.
+
+```{r}
+#| label: p7-data
+data(coal, package = "boot")
+yr <- 1851:1962
+y <- as.vector(table(factor(floor(coal$date), levels = yr)))
+e <- rep(1, length(yr)); e[1] <- 1 - (min(coal$date) - 1851); e[length(yr)] <- max(coal$date) - 1962
+c(disasters = sum(y), years = length(y), exposure_first = round(e[1], 3), exposure_last = round(e[length(e)], 3))
+```
+
+```{r}
+#| label: fig-p7-data
+#| fig-cap: "Annual counts of coal-mining explosions with 10 or more deaths, 1851–1962 (Jarrett, 1979). The first and last years are partially observed."
+plot(yr, y, type = "h", lwd = 2, col = course_cols[1], xlab = "year", ylab = "disasters per year")
+```
+
+### 3. Generative model {#sec-p7-model}
+
+**Model CP (single changepoint).** For $k\in\{1,\dots,111\}$ (the rate changes after the $k$-th year),
+$$
+y_t\mid\lambda_1,\lambda_2,k\sim\begin{cases}\mathrm{Poisson}(e_t\lambda_1),&t\le k,\\ \mathrm{Poisson}(e_t\lambda_2),&t>k,\end{cases}\qquad
+\lambda_1,\lambda_2\overset{\text{iid}}\sim\mathrm{Gamma}(2,1),\qquad k\sim\mathrm{Uniform}\{1,\dots,111\}.
+$$
+The prior on each rate has mean 2 per year and a 95% range of about 0.24–5.6, which covers both rare and frequent disasters without being flat on an unbounded scale.
+
+**Model TR (smooth trend),** for comparison: $y_t\sim\mathrm{Poisson}(e_t\exp\{\alpha+\beta(t-1906)/50\})$ with $\alpha,\beta\sim\mathrm N(0,2.5^2)$.
+
+**Assumptions.** Disasters occur as a Poisson process, independently given the rate. The rates are constant within regimes (CP) or log-linear in time (TR). The record is complete for disasters with 10 or more deaths. The 10-death threshold is fixed.
+
+### 4. Prior predictive check {#sec-p7-prior-pred}
+
+```{r}
+#| label: p7-prior-pred
+set.seed(700)
+pp <- replicate(2000, { l <- rgamma(2, 2, 1); k <- sample.int(111, 1); yy <- rpois(112, e * ifelse(seq_along(e) <= k, l[1], l[2]))
+                        c(total = sum(yy), max_year = max(yy), zero_years = sum(yy == 0)) })
+apply(pp, 1, quantile, c(0.05, 0.5, 0.95))
+```
+The prior predictive totals range from a few dozen to several hundred disasters over the period, and include the observed total of 191 comfortably. The prior is weakly informative on the scale of the data.
+
+### 5. Computation {#sec-p7-computation}
+
+The full conditionals are conjugate: $\lambda_1\mid k,y\sim\mathrm{Gamma}(2+\sum_{t\le k}y_t,\,1+\sum_{t\le k}e_t)$, similarly for $\lambda_2$, and $k$ has a discrete full conditional that can be normalised by summation. Moreover, integrating out both rates gives the **exact** marginal posterior of $k$,
+$$
+p(k\mid y)\propto\frac{\Gamma(2+S_1)}{(1+E_1)^{2+S_1}}\cdot\frac{\Gamma(2+S_2)}{(1+E_2)^{2+S_2}},
+$$
+where $S_1,E_1$ and $S_2,E_2$ are the counts and exposures before and after $k$. This gives an independent reference for validating the Gibbs sampler.
+
+```{r}
+#| label: p7-gibbs
+gibbs_cp <- function(y, e, n_iter, a = 2, b = 1, k0 = floor(length(y) / 2)) {
+  n <- length(y); K <- n - 1; k <- k0; cy <- cumsum(y); ce <- cumsum(e)
+  out <- matrix(NA_real_, n_iter, 3, dimnames = list(NULL, c("lambda1", "lambda2", "k")))
+  for (t in seq_len(n_iter)) {
+    l1 <- rgamma(1, a + cy[k], b + ce[k]); l2 <- rgamma(1, a + cy[n] - cy[k], b + ce[n] - ce[k])
+    lw <- cy[1:K] * log(l1) - l1 * ce[1:K] + (cy[n] - cy[1:K]) * log(l2) - l2 * (ce[n] - ce[1:K])
+    k <- sample.int(K, 1, prob = exp(lw - max(lw)))
+    out[t, ] <- c(l1, l2, k)
+  }
+  out
+}
+exact_cp <- function(y, e, a = 2, b = 1) {
+  n <- length(y); K <- n - 1; cy <- cumsum(y); ce <- cumsum(e)
+  lk <- lgamma(a + cy[1:K]) - (a + cy[1:K]) * log(b + ce[1:K]) + lgamma(a + cy[n] - cy[1:K]) - (a + cy[n] - cy[1:K]) * log(b + ce[n] - ce[1:K])
+  pk <- exp(lk - log_sum_exp(lk))
+  list(pk = pk, mean_l1 = sum(pk * (a + cy[1:K]) / (b + ce[1:K])), mean_l2 = sum(pk * (a + cy[n] - cy[1:K]) / (b + ce[n] - ce[1:K])))
+}
+set.seed(701)
+chains <- lapply(1:4, function(i) gibbs_cp(y, e, 5000, k0 = sample(10:100, 1))[-(1:500), ])
+l1 <- sapply(chains, function(d) d[, "lambda1"]); l2 <- sapply(chains, function(d) d[, "lambda2"]); kk <- sapply(chains, function(d) d[, "k"])
+ex <- exact_cp(y, e)
+rbind(summarise_draws_basic(l1, "lambda1"), summarise_draws_basic(l2, "lambda2"), summarise_draws_basic(yr[kk], "changepoint_year"))
+```
+
+### 6. Validating the computation {#sec-p7-validation}
+
+```{r}
+#| label: p7-validate
+c(z_lambda1 = (mean(l1) - ex$mean_l1) / mcse_mean(l1), z_lambda2 = (mean(l2) - ex$mean_l2) / mcse_mean(l2))
+top <- order(-ex$pk)[1:6]
+rbind(year = yr[top], exact = round(ex$pk[top], 3), gibbs = round(tabulate(as.vector(kk), 111)[top] / length(kk), 3))
+```
+
+```{r}
+#| label: p7-sbc
+set.seed(702)
+L <- 99
+ranks <- t(replicate(200, {
+  l <- rgamma(2, 2, 1); k <- sample.int(111, 1); ys <- rpois(112, e * ifelse(seq_along(e) <= k, l[1], l[2]))
+  d <- gibbs_cp(ys, e, 1190)[-(1:200), ][seq(10, 990, by = 10), ]
+  c(lambda1 = sum(d[, 1] < l[1]), lambda2 = sum(d[, 2] < l[2]))
+}))
+sapply(colnames(ranks), function(p) sbc_uniformity_test(ranks[, p], L)$p_value) |> round(3)
+```
+
+The Gibbs estimates agree with the exact posterior: the $z$-scores are within the range expected by chance, and the posterior probabilities of the changepoint years match to about two decimal places. Simulation-based calibration with 200 prior draws shows no evidence of miscalibration. The computation is therefore validated in two independent ways (@sec-validation).
+
+### 7. Posterior predictive checks and model comparison {#sec-p7-checks}
+
+```{r}
+#| label: p7-ppc
+set.seed(703)
+draws <- do.call(rbind, chains)[sample(nrow(do.call(rbind, chains)), 2000), ]
+rep_cp <- apply(draws, 1, function(d) rpois(112, e * ifelse(seq_along(e) <= d["k"], d["lambda1"], d["lambda2"])))
+tstat <- list(zero_years = function(v) sum(v == 0), max_year = max,
+              disp_after_1900 = function(v) var(v[yr > 1900]) / mean(v[yr > 1900]))
+t(sapply(tstat, function(f) c(observed = f(y), ppp = ppc_pvalue(f(y), apply(rep_cp, 2, f))))) |> round(3)
+```
+
+```{r}
+#| label: p7-loo
+m_tr <- poisson_regression_model(cbind(1, (yr - 1906) / 50), y, prior_sd = 2.5, offset = log(e))
+set.seed(704)
+w <- hmc_warmup(m_tr$log_density, m_tr$grad, c(0, 0), 1000, n_steps = 10)
+tr <- do.call(rbind, lapply(1:4, function(i) hmc_sampler(m_tr$log_density, m_tr$grad, w$position, 1500, w$step_size, 10)$draws))
+ll_cp <- t(apply(draws, 1, function(d) dpois(y, e * ifelse(seq_along(e) <= d["k"], d["lambda1"], d["lambda2"]), log = TRUE)))
+ll_tr <- t(apply(tr[sample(nrow(tr), 2000), ], 1, m_tr$log_lik_pointwise))
+loo_cp <- suppressWarnings(loo::loo(ll_cp, r_eff = 1)); loo_tr <- loo::loo(ll_tr, r_eff = 1)
+c(n_khat_above_0.7_cp = sum(loo::pareto_k_values(loo_cp) > 0.7), max_khat_cp = max(loo::pareto_k_values(loo_cp)),
+  max_khat_trend = max(loo::pareto_k_values(loo_tr))) |> round(2)
+# Exact LOO for the changepoint model: remove year t, recompute p(k | y_-t) exactly, and average the
+# negative-binomial predictive density of y_t over k.
+exact_loo_cp <- function(y, e, a = 2, b = 1) {
+  n <- length(y); K <- n - 1
+  sapply(seq_len(n), function(t) {
+    yy <- y; ee <- e; yy[t] <- 0; ee[t] <- 0
+    cy <- cumsum(yy); ce <- cumsum(ee)
+    lk <- lgamma(a + cy[1:K]) - (a + cy[1:K]) * log(b + ce[1:K]) + lgamma(a + cy[n] - cy[1:K]) - (a + cy[n] - cy[1:K]) * log(b + ce[n] - ce[1:K])
+    before <- t <= (1:K)
+    shape <- ifelse(before, a + cy[1:K], a + cy[n] - cy[1:K]); rate <- ifelse(before, b + ce[1:K], b + ce[n] - ce[1:K])
+    log_sum_exp(lk - log_sum_exp(lk) + dnbinom(y[t], size = shape, prob = rate / (rate + e[t]), log = TRUE))
+  })
+}
+elpd_cp <- exact_loo_cp(y, e); diff_pt <- elpd_cp - loo_tr$pointwise[, "elpd_loo"]
+c(elpd_cp_psis = loo_cp$estimates["elpd_loo", "Estimate"], elpd_cp_exact = sum(elpd_cp),
+  elpd_trend_psis = loo_tr$estimates["elpd_loo", "Estimate"], diff_cp_minus_trend = sum(diff_pt),
+  se_diff = sqrt(length(diff_pt) * var(diff_pt))) |> round(2)
+```
+
+The changepoint model reproduces the number of years without disasters ($p\approx0.35$) and the dispersion of counts after 1900 ($p\approx0.15$). The observed maximum of 6 disasters in a year is on the low side ($p\approx0.97$: most replications have a maximum of at least 6), a hint that early-period counts are slightly less variable than Poisson. This is mild, and noted as a possible refinement.
+
+For model comparison, PSIS-LOO is **unreliable** for the changepoint model. Three years near the changepoint have Pareto $\hat k>0.7$, because leaving out one of them changes the posterior of $k$ substantially (@sec-model-comparison). Here exact leave-one-out is cheap, because $p(k\mid y_{-t})$ is available in closed form and the predictive density of $y_t$ given the regime is negative binomial. Exact LOO gives a value close to the PSIS one, and an elpd difference of about 3.4 in favour of the changepoint model with a standard error of about 3.6. **By predictive accuracy the data do not clearly distinguish an abrupt change from a smooth log-linear decline.** The changepoint posterior is a useful summary of *when* the decline was concentrated, but it should not be presented as proof that the change was abrupt.
+
+### 8. Sensitivity {#sec-p7-sensitivity}
+
+```{r}
+#| label: p7-sensitivity
+prior_grid <- list(gamma_2_1 = c(2, 1), gamma_1_0.1 = c(1, 0.1), gamma_0.5_0.5 = c(0.5, 0.5), gamma_10_5 = c(10, 5))
+t(sapply(prior_grid, function(ab) { ex2 <- exact_cp(y, e, ab[1], ab[2])
+  c(lambda1 = ex2$mean_l1, lambda2 = ex2$mean_l2, mode_year = yr[which.max(ex2$pk)], p_1886_1896 = sum(ex2$pk[yr[1:111] %in% 1886:1896]))
+})) |> round(3)
+```
+Posterior means of the rates and the location of the changepoint barely change across priors that differ by an order of magnitude in scale. The conclusions are driven by the data.
+
+### 9. Conclusions and limitations {#sec-p7-conclusions}
+
+Under the single-changepoint model, the disaster rate fell from about 3.1 to about 0.95 per year, a reduction by a factor of about 3. The change is located around 1890, with about 98% of the posterior mass in 1886–1896 and no single year dominant. This is consistent with earlier Bayesian analyses of these data [@raftery1986bayesian]. A smooth log-linear decline predicts almost as well, however, so the data establish a large decline concentrated in the late nineteenth century more firmly than they establish its abruptness. Limitations:
+- a single abrupt change is a simplification of what were presumably gradual changes in technology, regulation and mining activity;
+- the counts are not normalised by the amount of mining (number of mines, workers or tonnage), so a falling rate need not mean safer mining per worker;
+- the observation window is defined by the first and last events;
+- the analysis says nothing about *causes*, which require historical evidence beyond these data.
+
+## Part B: your own study {#sec-p7-own-study}
+
+Choose a question and a public data set with clear provenance and licence: for example a data set from your own field, or from R packages and open repositories. Carry out all nine steps of Part A, and package the result according to the checklist.
+
+**Reproducibility checklist.**
+
+- [ ] The repository has `README.md` (question, how to reproduce), `LICENSE`, `data/` (raw data unmodified, with a provenance file), `R/` (functions), `analysis/` or a Quarto report, and `tests/`.
+- [ ] One command rebuilds every figure and number, e.g. `quarto render report.qmd`.
+- [ ] Package versions are recorded (`renv.lock` or `sessionInfo()` in an appendix), and seeds are set once at the top level.
+- [ ] Every sampler used is validated: against an exact or independent reference, or by SBC.
+- [ ] Every reported posterior summary has an MCSE, and convergence diagnostics are reported for every parameter.
+- [ ] Prior choices are justified and checked by prior predictive simulation. Sensitivity to priors and key modelling choices is reported.
+- [ ] Assumptions and limitations are stated explicitly, and causal language is used only when justified by the design.
+- [ ] A second person has rebuilt the project from a fresh clone on another machine.
+
+## Assessment {#sec-p7-assessment}
+
+Part B is assessed with the full [capstone rubric](capstone.qmd#sec-capstone-rubric), with equal weight on all five criteria.

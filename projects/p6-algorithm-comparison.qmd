@@ -1,0 +1,136 @@
+# Project 6: Comparing MCMC Algorithms {#sec-project-6 .unnumbered}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+::: {.callout-note appearance="simple"}
+## Project at a glance
+
+**Prerequisites:** @sec-mh, @sec-gibbs, @sec-hmc, @sec-adaptive, @sec-diagnostics, @sec-mixing, @sec-engineering.
+**Effort:** about 20 hours.
+**Deliverable:** a benchmark script that reproduces every number in your report from one command, and a report (at most 12 pages) in the style of a methods-comparison paper.
+**Skills:** designing a fair benchmark; measuring accuracy and efficiency with Monte Carlo error; accounting for computational cost; reporting the environment.
+:::
+
+## Question {#sec-p6-question}
+
+Which of random-walk Metropolis (RWM), Gibbs sampling, MALA and HMC should be used for a given posterior? How does the answer depend on the target's geometry and on how much is known about it in advance?
+
+## Targets {#sec-p6-targets}
+
+| Target | Dimension | Reference answer | Geometry |
+|:--|:--|:--|:--|
+| A. Gaussian with $\Sigma_{ij}=0.9^{\lvert i-j\rvert}$ | 10 | exact moments | strong correlation, condition number about 135 |
+| B. Eight schools, non-centred (@sec-hierarchical) | 10 | `eight_schools_exact()` | mild funnel remnants |
+| C. `birthwt` logistic regression (@sec-specialized) | 7 | long preconditioned HMC run | nearly Gaussian, moderately correlated |
+
+Target A is synthetic. Targets B and C use published data documented in @sec-datasets.
+
+## Protocol {#sec-p6-protocol}
+
+A comparison is fair only if it follows a protocol fixed *before* the results are seen (@sec-mix-comparisons, @sec-eng-simulation).
+
+1. **Equal tuning effort.** Each sampler gets the same warm-up budget and an automatic tuning rule: Robbins–Monro scale adaptation to acceptance 0.234 for RWM; a pilot grid search to acceptance near 0.574 for MALA; dual averaging to acceptance 0.8 for HMC with a fixed number of leapfrog steps; none for Gibbs. Report results both without and with a preconditioner estimated during warm-up (a dense mass matrix can be applied by whitening, as in the Task 3 solution).
+2. **Cost.** Count log-density and gradient evaluations: one per iteration for RWM and MALA, $L$ per iteration for HMC, and one full sweep of conditionals for Gibbs, which costs about as much as one dense density evaluation here. Also report wall-clock time, and include warm-up in both.
+3. **Accuracy.** Compare estimates of the mean and variance of the first coordinate (Target A), $\mu$ and $\tau$ (B), and every coefficient (C) with the reference values. Express errors as $z$-scores (error divided by MCSE), so that $|z|\gg3$ flags a bias or an unreliable MCSE.
+4. **Efficiency.** Bulk- and tail-ESS per second and per 1000 evaluations, from four chains.
+5. **Replication.** Repeat everything with at least 10 seeds, and report means and standard deviations across seeds.
+6. **Environment.** Report the hardware and software with `environment_report()`.
+
+## Tasks {#sec-p6-tasks}
+
+**Task 1.** Implement the protocol for Target A (the starter code does most of it), and extend it to Targets B and C.
+
+**Task 2.** Explain each sampler's performance on Target A in terms of its geometry: the condition number, the conditional structure of the precision matrix, and the scaling results of @sec-adaptive.
+
+**Task 3.** Repeat Target A with ideal preconditioning ($\Sigma$ known): RWM with proposal covariance $\Sigma$, HMC with inverse mass matrix $\Sigma$ (apply it by whitening the target, because `hmc_sampler()` supports only diagonal mass matrices). How do the rankings change? What does this imply about comparisons in published papers?
+
+**Task 4.** On Target B, report the divergences of HMC, and compare the tail-ESS of $\tau$ across samplers.
+
+**Task 5.** Write the report: protocol, results with MCSEs and spread across seeds, environment, and a recommendation that states its scope.
+
+## Starter code: Target A {#sec-p6-starter}
+
+```{r}
+#| label: p6-setup
+d <- 10; Sigma <- 0.9^abs(outer(1:d, 1:d, "-")); tg <- target_mvn(rep(0, d), Sigma); P <- tg$precision
+gibbs_mvn <- function(P, initial, n_iter) {            # componentwise Gibbs for N(0, P^{-1})
+  d <- length(initial); x <- initial; out <- matrix(NA_real_, n_iter, d)
+  for (t in seq_len(n_iter)) {
+    for (i in seq_len(d)) x[i] <- rnorm(1, -sum(P[i, -i] * x[-i]) / P[i, i], 1 / sqrt(P[i, i]))
+    out[t, ] <- x
+  }
+  out
+}
+tune_mala <- function(x0, grid = exp(seq(log(0.01), log(0.5), length.out = 12)), n_pilot = 500) {
+  acc <- sapply(grid, function(h) mala_sampler(tg$log_density, tg$grad, x0, n_pilot, step = h)$acceptance_rate)
+  grid[which.min(abs(acc - 0.574))]
+}
+compare_A <- function(seed, n = 5000, n_warm = 1000) {
+  set.seed(seed)
+  run <- function(label, fun, evals_per_iter, warm_evals) {
+    res <- lapply(1:4, function(k) timed(fun(rnorm(d))))
+    x1 <- sapply(res, function(r) r$value[, 1]); sec <- sum(sapply(res, `[[`, "seconds"))
+    data.frame(seed = seed, sampler = label, z_mean = mean(x1) / mcse_mean(x1), z_var = (mean(x1^2) - 1) / mcse_mean(x1^2),
+               rhat = rhat_rank(x1), ess_bulk = ess_bulk(x1), ess_tail = ess_tail(x1), seconds = sec,
+               ess_per_sec = ess_bulk(x1) / sec, ess_per_1000_evals = 1000 * ess_bulk(x1) / (4 * (n * evals_per_iter + warm_evals)))
+  }
+  rbind(
+    run("RWM", function(x0) rwm_adapt_scale(tg$log_density, x0, n_warm, n, target_accept = 0.234)$draws, 1, n_warm),
+    run("Gibbs", function(x0) gibbs_mvn(P, x0, n_warm + n)[-(1:n_warm), ], 1, n_warm),
+    run("MALA", function(x0) { h <- tune_mala(x0); mala_sampler(tg$log_density, tg$grad, x0, n, step = h)$draws }, 1, 12 * 500),
+    run("HMC", function(x0) { w <- hmc_warmup(tg$log_density, tg$grad, x0, n_warm, n_steps = 10)
+                              hmc_sampler(tg$log_density, tg$grad, w$position, n, w$step_size, 10)$draws }, 10, 10 * n_warm))
+}
+res1 <- compare_A(601)
+transform(res1, z_mean = round(z_mean, 2), z_var = round(z_var, 2), rhat = round(rhat, 3), ess_bulk = round(ess_bulk),
+          ess_tail = round(ess_tail), seconds = round(seconds, 2), ess_per_sec = round(ess_per_sec), ess_per_1000_evals = round(ess_per_1000_evals, 2))
+```
+
+## Assessment {#sec-p6-assessment}
+
+Assessed with the [capstone rubric](capstone.qmd#sec-capstone-rubric). The emphasis is on the fairness of the protocol, the quantification of Monte Carlo error, and the scope of the conclusions.
+
+## Solution guide {#sec-p6-solutions}
+
+::: {.callout-tip collapse="true"}
+## Tasks 1–2: replication over seeds and interpretation
+```{r}
+#| label: p6-seeds
+all_res <- do.call(rbind, lapply(601:610, compare_A))
+agg <- aggregate(cbind(ess_per_sec, ess_per_1000_evals, rhat) ~ sampler, data = all_res,
+                 FUN = function(v) c(mean = mean(v), sd = sd(v)))
+do.call(data.frame, agg) |> (\(t) { t[, -1] <- signif(t[, -1], 3); t })()
+c(max_abs_z_mean = max(abs(all_res$z_mean[all_res$sampler %in% c("Gibbs", "HMC")])),
+  max_abs_z_var = max(abs(all_res$z_var[all_res$sampler %in% c("Gibbs", "HMC")])))
+environment_report()
+```
+Across ten seeds, HMC has the largest ESS per second and per evaluation. Gibbs is a strong second, because the precision matrix of an AR(1) covariance is tridiagonal: each full conditional depends only on its neighbours, so a sweep propagates information along the chain efficiently. Without preconditioning, RWM and MALA fail on this target. Their step sizes are limited by the smallest standard deviation along the principal axes (about 0.23), while the largest is about 2.7, so a random walk needs on the order of $(2.7/0.23)^2\approx135$ steps to traverse the long direction once, and many traversals are needed for a reliable estimate. Their $\widehat R$ values well above 1.01 correctly signal non-convergence, and their MCSEs and $z$-scores cannot be trusted. For Gibbs and HMC, all $z$-scores are within the range expected from chance, which supports both the correctness and the reported MCSEs. Your timings will differ from the environment reported here, but the ratios between samplers should be similar.
+:::
+
+::: {.callout-tip collapse="true"}
+## Task 3: with ideal preconditioning
+```{r}
+#| label: p6-precond
+set.seed(611)
+pre <- function(label, fun, evals) {
+  res <- lapply(1:4, function(k) timed(fun(rnorm(d)))); x1 <- sapply(res, function(r) r$value[, 1])
+  data.frame(sampler = label, rhat = rhat_rank(x1), ess_bulk = ess_bulk(x1), ess_per_1000_evals = 1000 * ess_bulk(x1) / (4 * 5000 * evals))
+}
+rbind(pre("RWM, proposal cov 2.38^2 Sigma / d", function(x0) rw_metropolis(tg$log_density, x0, 5000, proposal_cov = 2.38^2 * Sigma / d)$draws, 1),
+      pre("HMC on whitened z (dense mass Sigma^-1), eps = 0.5, L = 4", function(x0) {
+            Lc <- t(chol(Sigma))                         # x = Lc z, so z ~ N(0, I) under the target
+            hz <- hmc_sampler(function(z) tg$log_density(as.vector(Lc %*% z)), function(z) as.vector(crossprod(Lc, tg$grad(as.vector(Lc %*% z)))),
+                              as.vector(solve(Lc, x0)), 5000, 0.5, 4)
+            hz$draws %*% t(Lc) }, 4)) |>
+  transform(rhat = round(rhat, 3), ess_bulk = round(ess_bulk), ess_per_1000_evals = round(ess_per_1000_evals, 1))
+```
+With proposal covariance proportional to $\Sigma$, RWM sees an isotropic target and converges ($\widehat R\approx1$). Its ESS per 1000 evaluations rises about 30-fold, to roughly the level of unpreconditioned Gibbs. HMC with inverse mass matrix $\Sigma$ (implemented here by running HMC on the whitened variable $z=L^{-1}x$, since the course sampler supports only diagonal mass matrices) is about 15 times more efficient per evaluation still. Its trajectories move far in every direction without a random walk, and its ESS even exceeds the number of draws, because successive draws are negatively correlated. Gibbs is unaffected by preconditioning. Rankings in published comparisons therefore depend strongly on whether, and how well, each method is preconditioned. A fair comparison either preconditions all methods using the same warm-up information, or none of them, and states which.
+:::
+
+::: {.callout-tip collapse="true"}
+## Tasks 4–5: Targets B and C, and the report
+For Target B, use `eight_schools_noncentered()` with the course samplers and `gibbs_hier_noncentered()`, and compare $\mu$ and $\tau$ with `eight_schools_exact()`. HMC typically has very few divergences in the non-centred form. The tail-ESS of $\tau$ is the discriminating quantity, because the left tail of $\tau$ (near 0) is hardest to explore. For Target C there is no exact answer: create a reference with a very long preconditioned HMC run, and report its own MCSE, which must be much smaller than those of the compared runs. The report should state the protocol before the results, give every efficiency measure with its spread across seeds, and restrict the recommendation to the class of targets studied. For example: "for low-dimensional, smooth, approximately Gaussian posteriors, gradient-based samplers with warm-up adaptation of a mass matrix are the most efficient of those tested".
+:::

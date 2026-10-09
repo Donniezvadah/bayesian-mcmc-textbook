@@ -1,0 +1,70 @@
+# R Code Index {#sec-r-code}
+
+```{r}
+#| include: false
+source("_common.R")
+```
+
+All course code is plain R in the `R/` directory of the repository, organised by purpose: `utilities/` (validation, numerics, plotting, summaries, benchmarking), `models/` (log densities, conjugate updates, targets), `samplers/` and `diagnostics/`. Every chapter loads it with `source("_common.R")`. To use it outside the book, clone the repository and run:
+
+```r
+source("_common.R")        # from the repository root; sources every file in R/
+```
+
+or source individual files: each file depends only on base R, `stats`, `graphics`, `parallel` and the validation helpers in `R/utilities/validation.R`. The links below download the files from this site. The table is generated from the source files when the book is built, so it always matches the code.
+
+## Files and functions {#sec-r-code-files}
+
+```{r}
+#| label: r-code-index
+#| echo: false
+#| results: asis
+files <- sort(list.files("R", pattern = "[.]R$", recursive = TRUE, full.names = TRUE))
+rows <- vapply(files, function(f) {
+  src <- readLines(f, warn = FALSE)
+  header <- sub("^#\\s*", "", src[1]); header <- sub("\\s*-+\\s*$", "", header)
+  fns <- sub("^\"?([^\" ]+)\"?\\s*<-\\s*function.*$", "\\1", grep("^\"?[A-Za-z_.\\[][^ ]*\"?\\s*<-\\s*function", src, value = TRUE))
+  sprintf("| [`%s`](../%s) | %s | %s |", f, f, header, paste0("`", fns, "`", collapse = ", "))
+}, character(1))
+cat("| File | Contents | Functions |", "|:--|:--|:--|", rows, sep = "\n")
+```
+
+```{r}
+#| label: r-code-count
+#| echo: false
+n_fun <- sum(vapply(files, function(f) length(grep("^\"?[A-Za-z_.\\[][^ ]*\"?\\s*<-\\s*function", readLines(f, warn = FALSE))), integer(1)))
+```
+
+In total: `r length(files)` files and `r n_fun` functions.
+
+## Tests {#sec-r-code-tests}
+
+The `tests/testthat/` directory contains `r length(list.files("tests/testthat", pattern = "^test-.*[.]R$"))` test files. Statistical tests compare Monte Carlo estimates with known values using tolerances of four Monte Carlo standard errors (`expect_within_mcse()` in `tests/testthat/helper-course.R`), so that a correct implementation fails a single check with probability about $6\times10^{-5}$ (@prp-suite-error). Run the suite from the repository root with
+
+```bash
+Rscript tests/run-tests.R
+```
+
+```{r}
+#| label: r-code-tests
+#| echo: false
+#| results: asis
+tf <- sort(list.files("tests/testthat", pattern = "^test-.*[.]R$", full.names = TRUE))
+cat(paste0("- [`", tf, "`](../", tf, ")"), sep = "\n")
+```
+
+## Stan programs {#sec-r-code-stan}
+
+The `stan/` directory contains Stan versions of three models, used to check the educational samplers against a production implementation. They are run locally with `scripts/run-stan-examples.R` (which requires CmdStan and `cmdstanr`), not during the book build. The reference results are recorded in `stan/README.md`.
+
+- [`stan/bioassay.stan`](../stan/bioassay.stan): the bioassay logistic regression (flat prior).
+- [`stan/eight_schools_centered.stan`](../stan/eight_schools_centered.stan): eight schools, centred.
+- [`stan/eight_schools_noncentered.stan`](../stan/eight_schools_noncentered.stan): eight schools, non-centred.
+
+## Conventions {#sec-r-code-conventions}
+
+- **Models** are lists of closures: `log_density(x)`, `grad(x)`, and `log_lik_pointwise(x)` where relevant. Log densities may be unnormalised, and return `-Inf` outside the support.
+- **Samplers** take a log density (and gradient) as their first arguments, validate their inputs, and return a list with `draws` (an iterations × parameters matrix) plus acceptance statistics and settings. `run_chains()` combines several chains into an `"mcmc_fit"` object.
+- **Diagnostics** take a vector (one chain) or an iterations × chains matrix.
+- **Randomness** comes from R's global generator: set a seed for reproducibility, or use `with_seed()`. `run_chains()` uses independent L'Ecuyer-CMRG streams.
+- The code is written for clarity and validated for correctness, not optimised for speed. For production work, use Stan, NIMBLE or another established system, and use the course code to understand and check them.
