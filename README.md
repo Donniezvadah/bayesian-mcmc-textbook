@@ -79,11 +79,9 @@ The workflow `.github/workflows/publish.yml`:
 3. checks internal links;
 4. deploys `_book/` to GitHub Pages.
 
-The site has not been deployed yet. One-time manual steps:
+The book is published at <https://donniezvadah.github.io/bayesian-mcmc-textbook/> from the repository <https://github.com/Donniezvadah/bayesian-mcmc-textbook>. Every push to `main` re-runs the workflow; pull requests are tested and built but not deployed.
 
-1. Create a repository on GitHub and push this directory to its `main` branch.
-2. In the repository's **Settings → Pages**, set **Source** to **GitHub Actions**.
-3. Push to `main` (or run the workflow manually from the **Actions** tab). The site will be published at `https://<user>.github.io/<repository>/`.
+To publish a fork or copy elsewhere: push it to the `main` branch of a GitHub repository, set **Settings → Pages → Source** to **GitHub Actions**, and push again (or run the workflow from the **Actions** tab). The site appears at `https://<user>.github.io/<repository>/`.
 
 All links inside the book are relative, so the site works under a project sub-path.
 

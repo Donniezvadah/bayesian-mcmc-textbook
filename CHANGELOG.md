@@ -4,6 +4,7 @@
 
 - Continuous integration now pins R 4.6.1 and Quarto 1.10.18, and restores R packages at the versions recorded in the new `renv.lock`.
 - Reviewer brief for the research-level chapters (24-27) in `REVIEW.md`.
+- First deployment to GitHub Pages; CI runner image pinned to ubuntu-24.04.
 
 ## 0.1.0 (2026-10-09)
 

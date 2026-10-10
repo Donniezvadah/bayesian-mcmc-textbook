@@ -9,6 +9,9 @@
 # cached in _freeze/ (freeze: auto), which is committed, so chapters are
 # re-executed in CI only when their source has changed.
 #
+# The runner image is pinned too (ubuntu-24.04), because ubuntu-latest moves to a
+# new Ubuntu release in October 2026.
+#
 # To update the pinned versions: change R_VERSION / QUARTO_VERSION here, and
 # regenerate renv.lock as described in README.md.
 
@@ -34,7 +37,7 @@ env:
 jobs:
   test:
     name: R test suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -60,7 +63,7 @@ jobs:
   build:
     name: Render book
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -119,7 +122,7 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pages: write
       id-token: write
